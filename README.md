@@ -1,7 +1,7 @@
 # zendure-mqtt-viewer
 
-A standalone, terminal ASCII dashboard for a Zendure SolarFlow battery hub,
-fed by MQTT.
+A standalone, full-screen terminal dashboard for a Zendure SolarFlow battery
+hub, fed by MQTT.
 
 ## This tool is strictly read-only
 
@@ -22,35 +22,39 @@ this tool cannot reach it even by accident:
 
 ## What it shows
 
-A live-refreshing text dashboard, grouped into:
+A full-screen, in-place-redrawing dashboard (curses) with four tabs you
+switch between - it never scrolls, and only the active tab is drawn:
 
-- **Hub Live Power** - solar in (total + per string), battery charge/discharge
-  power, output to home, grid/smart power.
-- **Hub State** - state of charge, pack state, bypass, hub/wifi/heat state,
-  pack count, discharge/charge time remaining, plus WiFi SSID/MAC/IP when
-  the hub has reported them.
-- **Hub Settings** - output/input limits, inverter max power, min SoC floor,
-  target SoC, bypass mode, and the other configuration fields.
-- **Battery Packs** - one block per pack (keyed by serial number), with SoC,
-  state of health, max cell temperature, max/min cell voltage, pack
-  voltage, power, state, firmware version, and derived cell imbalance
-  (`maxVol - minVol`, shown in mV).
-- **Undecoded / Unknown Fields** - the five `*Cycle` counters (no
-  documentation exists for them) and any property the tool has never seen
-  before, shown raw. New firmware fields show up here instead of being
-  silently dropped.
-- **Connection Status** - connected/disconnected (or replay-file mode),
-  messages received, parse error count, time since the last message.
+- **`[1] Overview`** - the at-a-glance view: a SoC bar gauge, a small
+  Solar -> Hub -> Home power-flow diagram with a battery
+  charge/discharge arrow, floor/target SoC.
+- **`[2] Hub`** - two columns of compact label/value rows: hub *state*
+  (SoC, pack state, bypass, hub/wifi/heat state, time remaining, WiFi
+  SSID/MAC/IP) and hub *settings* (output/input limits, min SoC floor,
+  target SoC, bypass mode, and the rest of the configuration fields).
+- **`[3] Packs`** - a real table, one row per battery pack (keyed by
+  serial number): SoC, state of health, max cell temp, max/min cell
+  voltage, derived cell imbalance (`maxVol - minVol`, in mV), power,
+  state, and how stale the row is.
+- **`[4] Raw`** - the five undocumented `*Cycle` counters and any field
+  the tool has never seen before, shown raw in a table. New firmware
+  fields surface here instead of being silently dropped.
 
-### Why everything shows an age, and `--` instead of `0`
+A status bar is pinned to the bottom row on every tab: connection state,
+message count, parse error count, time since the last message, and key
+hints. Switch tabs with `1`-`4` or `Tab`/`Shift-Tab`, quit with `q`.
+
+### Why values dim instead of disappear, and show `--` instead of `0`
 
 The hub's MQTT stream is **delta-only**: each message carries only the
 fields that changed since the last one, and some fields (`minSoc`,
 `passMode`, `socSet`, ...) may not appear for hours. This tool holds every
-field's last known value in memory and shows how long ago it was last
-updated. A field that has never been reported is shown as `--` with age
-`never seen` - it is never rendered as `0`, because "never reported" and
-"reported as zero" are different facts about the hub.
+field's last known value in memory. A field that has never been reported
+renders as `--` - never as `0`, because "never reported" and "reported as
+zero" are different facts about the hub. A field whose last update is more
+than 30s old is shown dimmed with a short age marker (`2s`, `5m`, `1h`)
+instead of eating a whole line per field - the staleness information is
+still there, just compact.
 
 ## Setup
 
@@ -61,8 +65,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Requires Python 3.11+ (developed against 3.14). The only runtime dependency
-is `paho-mqtt`; everything else is the standard library.
+Requires Python 3.11+ (developed against 3.14) with a terminal that
+supports `curses` (standard on macOS/Linux terminals). The only runtime
+dependency is `paho-mqtt`; everything else is the standard library.
 
 ### Config file
 
@@ -103,30 +108,37 @@ or set.
 ## Usage
 
 ```sh
-# live dashboard, refreshes in place, Ctrl-C to quit
+# full-screen curses dashboard, tabs 1-4, q to quit, resize-aware
 .venv/bin/python -m zendure_mqtt_viewer
 
-# print one frame and exit (waits briefly for a first message)
-.venv/bin/python -m zendure_mqtt_viewer --once
+# print one plain-text frame and exit - no curses, good for demos/scripts
+.venv/bin/python -m zendure_mqtt_viewer --once --tab overview
 
-# run for 60 seconds then print the final frame and exit
+# run for 60 seconds then exit (curses on a tty; headless + one final
+# plain-text frame when piped, never a growing stream of frames)
 .venv/bin/python -m zendure_mqtt_viewer --duration 60
 
-# replay a capture file offline, no network at all
-.venv/bin/python -m zendure_mqtt_viewer --replay samples/sample_capture_1.jsonl --once
+# replay a capture file offline, no network at all - drives the exact
+# same dashboard
+.venv/bin/python -m zendure_mqtt_viewer --replay samples/sample_capture_1.jsonl --once --tab packs
 
 # replay paced at real-time speed instead of as fast as possible
 .venv/bin/python -m zendure_mqtt_viewer --replay samples/sample_capture_2.jsonl --replay-speed 1.0
 ```
 
 Other flags: `--config PATH`, `--interval SECONDS` (screen refresh rate,
-default 1.0), `--width N` (override detected terminal width).
+default 1.0), `--tab {overview,hub,packs,raw}` (initial/only tab),
+`--width N` / `--height N` (override detected terminal size - only affects
+the plain-text `--once`/piped path; the interactive dashboard always reads
+the live terminal size and reacts to resize).
 
-When stdout isn't a terminal (e.g. piped to a file), the tool prints
-successive frames separated by a divider instead of doing in-place ANSI
-redraw, so `--duration 60 | tee out.txt` works for unattended capture.
-Ctrl-C at any point stops cleanly, restores the cursor, and (in live mode)
-disconnects from the broker.
+On a terminal too small to lay out (below roughly 54x14), the dashboard
+shows a compact "terminal too small" message instead of crashing or
+wrapping into a mess.
+
+Ctrl-C at any point stops cleanly, restores the terminal, and (in live
+mode) disconnects from the broker. `curses.wrapper()` guarantees terminal
+restoration even on an unexpected exception.
 
 ## Running tests
 
@@ -134,13 +146,36 @@ disconnects from the broker.
 .venv/bin/pytest
 ```
 
-Tests run fully offline. They cover: every scaling conversion, every enum
+Tests run fully offline, none touch curses or a real terminal - the
+dashboard layout is pure Python (`layout.py`) that builds a fixed-size grid
+of styled text, so it's tested by rendering into WxH buffers and asserting
+on them directly. Coverage includes: every scaling conversion, every enum
 decode, the `59940` remaining-time sentinel, delta-merge (a message with
 one field must not clear previously-seen fields), never-seen-vs-zero,
 malformed-line handling (using the real captures in `samples/`, each of
 which contains one deliberately malformed line), unknown-field capture (top
-level, `properties`, and `packData`), config loading/env overrides, and the
-publish guard.
+level, `properties`, and `packData`), config loading/env overrides, the
+publish guard, and the dashboard layout itself (frames never exceed the
+requested rows/cols at several sizes, exactly fill the screen when there's
+room, tab switching changes content, the active tab is marked, the small-
+terminal fallback doesn't crash).
+
+## Architecture
+
+- `decode.py` / `state.py` - pure decoding and delta-merge state, unchanged
+  by the dashboard rework, no I/O.
+- `layout.py` - pure dashboard layout: builds a `Frame` (a fixed rows x cols
+  grid of styled text spans) from a `DashboardState` snapshot for the
+  active tab. No curses, no I/O - this is what makes it unit-testable and
+  what lets `--replay`/`--once` print the exact same thing curses draws.
+- `tui.py` - thin curses runtime: blits a `Frame` onto the real terminal
+  and turns keypresses into tab changes. Everything layout-related lives in
+  `layout.py`; this file only calls `addstr()`.
+- `mqtt_client.py` - the publish-guarded subscriber.
+- `replay.py` - feeds a capture file through the same `DashboardState`
+  the live subscriber uses.
+- `cli.py` - argument parsing and mode dispatch (interactive curses vs.
+  `--once`/`--duration` plain-text snapshot).
 
 ## Sample data
 

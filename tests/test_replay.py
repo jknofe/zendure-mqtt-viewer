@@ -1,6 +1,6 @@
 """Integration tests using the real sample captures - offline, no network.
 
-These exercise the full decode + state + render path the way --replay does,
+These exercise the full decode + state + layout path the way --replay does,
 and pin down behavior on the deliberately-malformed line each capture file
 contains.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zendure_mqtt_viewer import render
+from zendure_mqtt_viewer import layout
 from zendure_mqtt_viewer.replay import replay_file
 from zendure_mqtt_viewer.state import DashboardState
 
@@ -59,38 +59,41 @@ def test_replay_captures_cycle_counters_as_undecoded():
     assert cycle_fields, "expected at least one *Cycle field in undecoded"
 
 
-def test_rendered_dashboard_includes_all_required_sections():
+def test_overview_dashboard_shows_battery_and_power_flow_panels():
     state = _replay("sample_capture_1.jsonl")
-    text = render.render(state, now=1784980800.0, mode="replay")
-    for heading in [
-        "Hub Live Power",
-        "Hub State",
-        "Hub Settings",
-        "Battery Packs",
-        "Undecoded",
-        "Connection Status",
-    ]:
-        assert heading in text
+    frame = layout.build_frame(state, "overview", 80, 24, now=1784980800.0, mode="replay")
+    text = frame.to_text()
+    assert "BATTERY" in text
+    assert "POWER FLOW" in text
+    assert "HUB" in text
 
 
-def test_rendered_dashboard_shows_pack_serial_and_cell_imbalance():
+def test_packs_dashboard_shows_table_with_pack_row():
     state = _replay("sample_capture_1.jsonl")
-    text = render.render(state, now=1784980800.0, mode="replay")
+    frame = layout.build_frame(state, "packs", 80, 24, now=1784980800.0, mode="replay")
+    text = frame.to_text()
     assert "ZZ0EXAMPLE00001" in text
-    assert "Cell Imbalance" in text
+    assert "SoC" in text and "SoH" in text
 
 
-def test_rendered_dashboard_never_shows_never_seen_field_as_zero():
+def test_raw_dashboard_shows_cycle_counters():
+    state = _replay("sample_capture_1.jsonl")
+    frame = layout.build_frame(state, "raw", 80, 24, now=1784980800.0, mode="replay")
+    text = frame.to_text()
+    assert "Cycle" in text
+
+
+def test_dashboard_never_shows_never_seen_field_as_zero():
     state = DashboardState()
-    text = render.render(state, now=1.0, mode="replay")
-    # a brand new, empty state must show placeholders, not zeros, for
-    # every hub field it knows how to decode.
+    frame = layout.build_frame(state, "hub", 80, 24, now=1.0, mode="replay")
+    text = frame.to_text()
     assert "0 W" not in text
     assert "--" in text
 
 
-def test_narrow_terminal_width_does_not_crash_and_truncates():
+def test_frame_fits_narrow_terminal_without_crashing():
     state = _replay("sample_capture_1.jsonl")
-    text = render.render(state, width=24, now=1784980800.0, mode="replay")
-    for line in text.splitlines():
-        assert len(line) <= 24
+    frame = layout.build_frame(state, "overview", 60, 20, now=1784980800.0, mode="replay")
+    for line in frame.lines:
+        assert sum(len(sp.text) for sp in line) <= 60
+    assert len(frame.lines) <= 20
