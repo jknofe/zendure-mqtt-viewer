@@ -3,12 +3,12 @@
 A standalone, full-screen terminal dashboard for a Zendure SolarFlow battery
 hub, fed by MQTT.
 
-## This tool is strictly read-only
+## This tool cannot command your hardware
 
-It subscribes to the hub's `.../properties/report` topic and nothing else.
-**It never publishes to the MQTT broker, under any circumstance.** The write
-topic (`iot/.../properties/write`) commands a real battery and inverter -
-this tool cannot reach it even by accident:
+It subscribes to the hub's `.../properties/report` topic. **It never sends a
+device command, under any circumstance.** The write topic
+(`iot/.../properties/write`) drives a real battery and inverter - this tool
+cannot reach it even by accident:
 
 - `zendure_mqtt_viewer/mqtt_client.py` defines `GuardedMqttClient`, a
   subclass of `paho.mqtt.client.Client` whose `publish()` and `will_set()`
@@ -16,9 +16,38 @@ this tool cannot reach it even by accident:
   `RuntimeError`), regardless of arguments.
 - `tests/test_mqtt_guard.py` asserts this for several call shapes, including
   an empty payload and the exact shape of a real write command.
-- `grep -rn "publish" --include='*.py' --exclude-dir=.venv .` shows no
-  live/callable publish anywhere in this codebase except that guard and its
-  test.
+- `tests/test_refresh.py` asserts that the write topic is refused even
+  through the one path that is allowed to publish (below).
+
+### The single exception: `--allow-refresh`
+
+Some fields - `soh` (battery state of health), `maxTemp`, `softVersion` -
+are **never** sent in the normal delta stream. They only appear in a full
+report, which the hub sends when asked. Measured here: none of the three
+arrived in 30 minutes of passive listening; after one request, all three
+arrived in 1.9 seconds.
+
+Asking means publishing, so it is off by default and deliberately narrow.
+With `--allow-refresh`, the `r` key sends exactly this and nothing else:
+
+```
+topic:   iot/<product_id>/<device_id>/properties/read
+payload: {"properties": ["getAll"]}
+```
+
+That is a request for data, not a device command. It is allow-listed **by
+value**: `GuardedMqttClient` is handed that one `(topic, payload)` pair at
+construction and refuses anything that is not character-for-character
+identical, `publish()` still raises for every caller, and without the flag
+nothing is armed at all. So a future edit cannot widen "refresh" into "set
+the output limit" - it would have to defeat the value check to do it.
+Requests are rate-limited to one per 10 seconds and ignored while
+disconnected.
+
+Note the topic asymmetry: reports arrive on `/<product_id>/...` with a
+leading slash and no prefix, while requests go to `iot/<product_id>/...`.
+The request topic is not derived from the report topic for that reason;
+publishing to the wrong one fails silently.
 
 ## What it shows
 
@@ -46,7 +75,9 @@ switch between - it never scrolls, and only the active tab is drawn:
 
 A status bar is pinned to the bottom row on every tab: connection state,
 message count, parse error count, time since the last message, and key
-hints. Switch tabs with `1`-`4` or `Tab`/`Shift-Tab`, quit with `q`.
+hints. Switch tabs with `1`-`4` or `Tab`/`Shift-Tab`, quit with `q`. With
+`--allow-refresh`, `r` asks the hub for a full report (see above) and the
+hint area briefly reads `refresh sent`.
 
 Colour carries meaning rather than decoration: the SoC gauge runs red
 below 20% / yellow below 50% / green above, charging is green and

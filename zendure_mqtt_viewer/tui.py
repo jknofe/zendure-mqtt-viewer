@@ -94,6 +94,7 @@ def attr_for(attr: str) -> int:
 # keys that switch tabs directly
 _DIGIT_KEYS = {ord(str(i + 1)): i for i in range(len(layout.TABS))}
 _QUIT_KEYS = {ord("q"), ord("Q")}
+_REFRESH_KEYS = {ord("r"), ord("R")}
 
 # How often to checkpoint last-seen values while running.
 PERSIST_INTERVAL = 60.0
@@ -144,6 +145,7 @@ def run(
     duration: Optional[float] = None,
     initial_tab: str = "overview",
     on_persist: Optional[Callable[[], object]] = None,
+    on_refresh: Optional[Callable[[], object]] = None,
 ) -> None:
     """Main curses loop. Call via curses.wrapper() so the terminal is always
     restored, including on exception or Ctrl-C.
@@ -151,6 +153,10 @@ def run(
     ``on_persist`` (if given) is called every PERSIST_INTERVAL seconds to
     checkpoint last-seen values, so a kill -9 or a laptop lid closing still
     leaves a recent cache behind.
+
+    ``on_refresh`` (if given) is what the ``r`` key calls: a request for a
+    full report. Absent it, ``r`` does nothing and the hint is not shown -
+    the key exists only when --allow-refresh armed it.
     """
     global _interrupted
     _interrupted = False
@@ -203,6 +209,14 @@ def run(
                 elif ch in (curses.KEY_LEFT, curses.KEY_BTAB):
                     tab_index = (tab_index - 1) % len(layout.TABS)
                     need_redraw = True
+                elif ch in _REFRESH_KEYS and on_refresh is not None:
+                    try:
+                        on_refresh()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        # A keypress must never take down the dashboard, and
+                        # never print anything either. Log it and carry on.
+                        logger.warning("refresh request raised: %s", exc)
+                    need_redraw = True
                 elif ch == curses.KEY_RESIZE:
                     curses.update_lines_cols()
                     stdscr.clear()
@@ -211,7 +225,14 @@ def run(
             if need_redraw or (now - last_draw) >= interval:
                 rows, cols = stdscr.getmaxyx()
                 frame = layout.build_frame(
-                    state, layout.TABS[tab_index], cols, rows, now, mode=mode, device_id=device_id
+                    state,
+                    layout.TABS[tab_index],
+                    cols,
+                    rows,
+                    now,
+                    mode=mode,
+                    device_id=device_id,
+                    allow_refresh=on_refresh is not None,
                 )
                 _blit(stdscr, frame)
                 last_draw = now

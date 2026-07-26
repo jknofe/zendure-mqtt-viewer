@@ -313,7 +313,31 @@ def _tab_bar(cols: int, active_index: int) -> list[Span]:
     return [Span("│", "muted")] + _row(spans, inner) + [Span("│", "muted")]
 
 
-def _status_bar(cols: int, state: DashboardState, now: float, mode: str) -> list[Span]:
+# How long the status bar acknowledges a refresh request. Long enough to be
+# read, short enough that the key hint is back before you would press it again
+# (REFRESH_MIN_INTERVAL is 10s).
+REFRESH_ACK_SECONDS = 4.0
+
+
+def _hint_text(state: DashboardState, now: float, allow_refresh: bool) -> str:
+    """The right-hand key hints, which double as the refresh acknowledgement."""
+    if not allow_refresh:
+        return " [1-4/Tab] switch  [q] quit "
+    sent = state.last_refresh_request
+    if sent is not None and 0 <= now - sent < REFRESH_ACK_SECONDS:
+        # Not an error and not a value: just the app saying "heard you". It
+        # lives in the hint's own cells, so nothing else moves.
+        return " refresh sent  [q] quit "
+    return " [1-4/Tab] switch  [r] refresh  [q] quit "
+
+
+def _status_bar(
+    cols: int,
+    state: DashboardState,
+    now: float,
+    mode: str,
+    allow_refresh: bool = False,
+) -> list[Span]:
     since = short_age(now, state.last_message_wall_time)
     inner = cols - 2
 
@@ -328,7 +352,7 @@ def _status_bar(cols: int, state: DashboardState, now: float, mode: str) -> list
         left = f" replay · {state.messages_received} lines · errors {state.parse_errors} "
     else:
         left = f" msgs {state.messages_received} · errors {state.parse_errors} · last {since} "
-    hint = " [1-4/Tab] switch  [q] quit "
+    hint = _hint_text(state, now, allow_refresh and mode != "replay")
     gap = max(1, inner - len(left) - len(hint))
     content = fit(left + " " * gap + hint, inner)
     cut = min(len(left), len(content))
@@ -751,6 +775,7 @@ def build_frame(
     now: float,
     mode: str = "live",
     device_id: str = "",
+    allow_refresh: bool = False,
 ) -> Frame:
     """Build the full one-screen dashboard Frame for the given tab.
 
@@ -805,7 +830,7 @@ def build_frame(
             lines.append(_row([Span("│", "muted")] + line + [Span("│", "muted")], cols))
         lines.append(_divider(cols))
 
-    lines.append(_status_bar(cols, state, now, mode))
+    lines.append(_status_bar(cols, state, now, mode, allow_refresh))
     lines.append(_bottom_border(cols))
 
     # Safety net: force exact row/col count no matter what the section

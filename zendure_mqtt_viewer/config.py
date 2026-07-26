@@ -53,6 +53,18 @@ class BrokerConfig:
         # Leading slash is deliberate - see PROTOCOL.md.
         return f"/{self.product_id}/{self.device_id}/properties/report"
 
+    @property
+    def read_topic(self) -> str:
+        """Where a "send me everything" request goes.
+
+        Deliberately not derived from report_topic: the two are not
+        symmetric. Reports arrive on a leading-slash topic with no prefix,
+        while the hub listens for requests under ``iot/``. Getting this
+        wrong is silent - the request is accepted by the broker and simply
+        never answered.
+        """
+        return f"iot/{self.product_id}/{self.device_id}/properties/read"
+
 
 def resolve_config_path(cli_path: Optional[str]) -> Path:
     if cli_path:

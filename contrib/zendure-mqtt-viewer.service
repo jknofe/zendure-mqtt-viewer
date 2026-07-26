@@ -22,7 +22,7 @@ Wants=network-online.target
 Type=forking
 WorkingDirectory=%h/zendure-mqtt-viewer
 Environment=TERM=screen-256color
-ExecStart=/usr/bin/tmux -L zendure new-session -d -s zendure -x 200 -y 50 "%h/zendure-mqtt-viewer/.venv/bin/python -m zendure_mqtt_viewer"
+ExecStart=/usr/bin/tmux -L zendure new-session -d -s zendure -x 200 -y 50 "%h/zendure-mqtt-viewer/.venv/bin/python -m zendure_mqtt_viewer --allow-refresh"
 ExecStop=/usr/bin/tmux -L zendure kill-server
 Restart=on-failure
 RestartSec=10

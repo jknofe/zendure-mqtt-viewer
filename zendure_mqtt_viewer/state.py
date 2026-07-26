@@ -100,6 +100,8 @@ class DashboardState:
         # separate from last_error, which is about message *content*: a bad
         # payload says nothing about the connection and must not clear it.
         self.connection_error: str = ""
+        # When a full-report request was last sent (--allow-refresh only).
+        self.last_refresh_request: Optional[float] = None
 
     # -- ingestion ----------------------------------------------------
 
@@ -122,6 +124,10 @@ class DashboardState:
         """Record why the link is down. Never sets connected=True."""
         self.connected = False
         self.connection_error = reason or "connection failed"
+
+    def note_refresh_requested(self, now: float) -> None:
+        """A full-report request just went out; the status bar acknowledges it."""
+        self.last_refresh_request = now
 
     def apply_payload(self, payload: dict, wall_time: float) -> None:
         """Merge one already-parsed payload dict into the running state."""

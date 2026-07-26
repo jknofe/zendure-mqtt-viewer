@@ -1,12 +1,18 @@
-"""MQTT I/O layer - read-only by construction.
+"""MQTT I/O layer - it cannot command the device, by construction.
 
-SAFETY: this module must never publish to the broker. GuardedMqttClient
-overrides publish()/will_set() to raise unconditionally, regardless of what
-calls them or with what arguments. This is enforced in code, not just by
-convention or by "we just don't call it" - see tests/test_mqtt_guard.py.
+SAFETY: the write topic (`iot/.../properties/write`) commands a real battery
+and inverter, and nothing here can reach it. GuardedMqttClient overrides
+publish()/will_set() to raise unconditionally, regardless of what calls them
+or with what arguments - see tests/test_mqtt_guard.py.
 
-The write topic (`iot/.../properties/write`) commands a real battery and
-inverter. This module only ever subscribes to the report topic.
+There is exactly one exception, and it is not a device command: an opt-in
+"send me all your properties" request (`--allow-refresh`). It is allow-listed
+by *value*, not by permission - the client is handed one exact
+(topic, payload) pair at construction time and send_allowed_request() refuses
+anything that is not character-for-character that pair. publish() itself
+still raises for every caller, so there is no general write path to misuse:
+a bug or a future edit cannot turn "refresh" into "set output to 800 W".
+Without the flag no publish path exists at all.
 """
 from __future__ import annotations
 
@@ -24,6 +30,19 @@ logger = logging.getLogger(__name__)
 
 class PublishForbiddenError(RuntimeError):
     """Raised the instant anything tries to write to the broker."""
+
+
+# The one message this tool may ever send, and only with --allow-refresh.
+# It asks the hub to report every property it has; some fields (soh, maxTemp,
+# softVersion) only ever arrive in such a full report. Spelled as a literal
+# rather than json.dumps(...) so the armed value cannot drift with a
+# formatting change - the hub matches on the exact string.
+REFRESH_PAYLOAD = '{"properties": ["getAll"]}'
+
+# The hub answers a request within a few seconds. Anything faster than this
+# is a held-down key, not a user intent, and there is nothing to gain from
+# asking a device twice in the same breath.
+REFRESH_MIN_INTERVAL = 10.0
 
 
 def _is_failure(reason_code) -> bool:
@@ -47,22 +66,52 @@ def _is_failure(reason_code) -> bool:
 class GuardedMqttClient(mqtt.Client):
     """A paho MQTT client with every broker-write path disabled.
 
-    Subscribing is fine and is all this tool ever does. Publishing -
+    Subscribing is fine and is most of what this tool does. Publishing -
     including an empty payload, a retained-clear, or configuring a will
     message that the broker would publish on our behalf - is forbidden.
+
+    ``allowed_request`` optionally arms exactly one message: a
+    ``(topic, payload)`` pair that ``send_allowed_request`` will accept and
+    nothing else will. Left at None (the default) there is no way to publish
+    anything at all.
     """
+
+    def __init__(self, *args, allowed_request: Optional[tuple[str, str]] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._allowed_request = allowed_request
 
     def publish(self, *args, **kwargs):  # type: ignore[override]
         raise PublishForbiddenError(
-            "GuardedMqttClient.publish() was called. This tool is read-only "
-            "and must never publish to the MQTT broker."
+            "GuardedMqttClient.publish() was called. This tool never publishes "
+            "device commands. If you meant the refresh request, use "
+            "send_allowed_request()."
         )
 
     def will_set(self, *args, **kwargs):  # type: ignore[override]
         raise PublishForbiddenError(
-            "GuardedMqttClient.will_set() was called. This tool is read-only "
-            "and must never configure a will message."
+            "GuardedMqttClient.will_set() was called. This tool must never "
+            "configure a will message."
         )
+
+    def send_allowed_request(self, topic: str, payload: str):
+        """Publish the one pre-armed message, or refuse.
+
+        Compares against the armed pair by value, so the caller cannot widen
+        what is sendable - passing a different topic or a differently spelled
+        payload is an error, not a new permission. Calls paho's publish
+        directly because our own override exists to stop exactly this from
+        being reachable by accident.
+        """
+        if self._allowed_request is None:
+            raise PublishForbiddenError(
+                "No request is armed on this client; refresh is disabled."
+            )
+        if (topic, payload) != self._allowed_request:
+            raise PublishForbiddenError(
+                f"Refused to publish to {topic!r}: only the armed refresh "
+                f"request may be sent."
+            )
+        return mqtt.Client.publish(self, topic, payload, qos=0, retain=False)
 
 
 class Subscriber:
@@ -73,14 +122,18 @@ class Subscriber:
         config: BrokerConfig,
         state: DashboardState,
         on_update: Optional[Callable[[], None]] = None,
+        allow_refresh: bool = False,
     ) -> None:
         self.config = config
         self.state = state
         self.on_update = on_update
+        self.allow_refresh = allow_refresh
+        self._last_refresh: Optional[float] = None
 
         self._client = GuardedMqttClient(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             protocol=mqtt.MQTTv311,
+            allowed_request=(config.read_topic, REFRESH_PAYLOAD) if allow_refresh else None,
         )
         if config.username:
             self._client.username_pw_set(config.username, config.password)
@@ -98,6 +151,34 @@ class Subscriber:
             self._client.loop_stop()
         finally:
             self._client.disconnect()
+
+    def request_full_report(self, now: Optional[float] = None) -> bool:
+        """Ask the hub to report everything. True if a request went out.
+
+        Returns False (never raises) for every "not now" case - refresh not
+        enabled, not connected, or asked again too soon - because the caller
+        is a keypress handler inside the draw loop and a dashboard must not
+        fall over because a key was pressed at an awkward moment.
+        """
+        if not self.allow_refresh:
+            return False
+        now = time.time() if now is None else now
+        if self._last_refresh is not None and now - self._last_refresh < REFRESH_MIN_INTERVAL:
+            return False
+        if not self.state.connected:
+            logger.info("refresh requested while disconnected, ignored")
+            return False
+        try:
+            self._client.send_allowed_request(self.config.read_topic, REFRESH_PAYLOAD)
+        except (PublishForbiddenError, OSError, ValueError) as exc:
+            logger.warning("refresh request failed: %s", exc)
+            return False
+        self._last_refresh = now
+        self.state.note_refresh_requested(now)
+        logger.info("requested full report on %s", self.config.read_topic)
+        if self.on_update:
+            self.on_update()
+        return True
 
     # -- paho callbacks (CallbackAPIVersion.VERSION2 signatures) --------
 
