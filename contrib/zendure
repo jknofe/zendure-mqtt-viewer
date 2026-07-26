@@ -1,0 +1,27 @@
+#!/bin/sh
+# Attach to the Zendure dashboard.
+#
+# The session runs on its own tmux socket (-L zendure) so that stopping the
+# systemd unit can never kill tmux sessions started by hand. The cost is
+# that a plain "tmux ls" or "tmux attach" cannot see it, which is what this
+# wrapper is for. Install it as ~/.local/bin/zendure.
+#
+#   zendure          attach (Ctrl-b d to detach, it keeps running)
+#   zendure status   is the service up?
+#   zendure log      recent service output
+#   zendure restart  bounce it
+
+case "$1" in
+    status)  exec systemctl --user status zendure-mqtt-viewer --no-pager ;;
+    log)     exec journalctl --user -u zendure-mqtt-viewer -n 50 --no-pager ;;
+    restart) exec systemctl --user restart zendure-mqtt-viewer ;;
+    "")      ;;
+    *)       echo "usage: zendure [status|log|restart]" >&2; exit 2 ;;
+esac
+
+if ! tmux -L zendure has-session -t zendure 2>/dev/null; then
+    echo "No dashboard session. Starting the service..." >&2
+    systemctl --user start zendure-mqtt-viewer || exit 1
+    sleep 2
+fi
+exec tmux -L zendure attach -t zendure

@@ -202,19 +202,27 @@ restoration even on an unexpected exception.
 the dashboard in a tmux session across logout and reboot, still attachable:
 
 ```sh
-mkdir -p ~/.config/systemd/user
+mkdir -p ~/.config/systemd/user ~/.local/bin
 cp contrib/zendure-mqtt-viewer.service ~/.config/systemd/user/
+cp contrib/zendure ~/.local/bin/ && chmod +x ~/.local/bin/zendure
 systemctl --user daemon-reload
 systemctl --user enable --now zendure-mqtt-viewer
 loginctl enable-linger "$USER"    # start at boot without logging in
 
-tmux -L zendure attach -t zendure # Ctrl-b d to detach, it keeps running
+zendure                           # attach; Ctrl-b d detaches, it keeps running
 ```
 
 The session lives on its own tmux socket (`-L zendure`), so stopping the
-unit can never take down tmux sessions you started yourself. Restarting
-it costs nothing: the last-seen cache means the dashboard comes back with
-its values already populated.
+unit can never take down tmux sessions you started yourself.
+
+**That socket is also why `tmux ls` and `tmux attach` will not show it** -
+they only ever look at the default socket, so the dashboard appears to be
+gone when it is running perfectly well. Use the `zendure` wrapper from
+`contrib/` (it also takes `status`, `log` and `restart`), or the long form
+`tmux -L zendure attach -t zendure`.
+
+Restarting costs nothing: the last-seen cache means the dashboard comes
+back with its values already populated.
 
 ## Running tests
 
