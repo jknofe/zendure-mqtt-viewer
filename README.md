@@ -244,6 +244,10 @@ real captures of the report topic, used by `--replay` and by the test
 suite. Each contains one malformed line, matching the ~1-in-600 malformed
 message rate observed on real traffic.
 
+The identifying fields are anonymised: the WiFi SSID, the MAC address, the
+LAN IP, the hub serial (`AB1234CD`) and the pack serial (`ZZ0EXAMPLE00001`)
+are placeholders. Every measurement is untouched real data.
+
 ## Notes on the protocol doc
 
 While decoding real capture data, one field's documented scaling didn't
@@ -252,3 +256,7 @@ documented as a direct percent, but the only observed value (`978`) only
 makes sense as `97.8%` (i.e. scaled by /10, like `minSoc`/`socSet`). This
 tool decodes `soh` as /10; see the comment next to `PACK_FIELD_SPECS["soh"]`
 in `zendure_mqtt_viewer/decode.py`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
