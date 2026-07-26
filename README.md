@@ -196,6 +196,26 @@ Ctrl-C at any point stops cleanly, restores the terminal, and (in live
 mode) disconnects from the broker. `curses.wrapper()` guarantees terminal
 restoration even on an unexpected exception.
 
+### Running it on a headless box
+
+`contrib/zendure-mqtt-viewer.service` is a systemd **user** unit that keeps
+the dashboard in a tmux session across logout and reboot, still attachable:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp contrib/zendure-mqtt-viewer.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zendure-mqtt-viewer
+loginctl enable-linger "$USER"    # start at boot without logging in
+
+tmux -L zendure attach -t zendure # Ctrl-b d to detach, it keeps running
+```
+
+The session lives on its own tmux socket (`-L zendure`), so stopping the
+unit can never take down tmux sessions you started yourself. Restarting
+it costs nothing: the last-seen cache means the dashboard comes back with
+its values already populated.
+
 ## Running tests
 
 ```sh

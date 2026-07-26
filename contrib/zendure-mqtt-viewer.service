@@ -1,0 +1,31 @@
+[Unit]
+# systemd *user* unit: keeps the dashboard running in a tmux session that
+# survives logout and reboot, while staying attachable.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/zendure-mqtt-viewer.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now zendure-mqtt-viewer
+#   loginctl enable-linger "$USER"     # start at boot without logging in
+#
+# Attach with:  tmux -L zendure attach -t zendure   (Ctrl-b d to detach)
+#
+# The session lives on its own tmux socket (-L zendure) rather than the
+# default one, so stopping this unit can never take down tmux sessions you
+# started yourself.
+Description=Zendure SolarFlow MQTT dashboard (tmux)
+Documentation=https://github.com/jknofe/zendure-mqtt-viewer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h/zendure-mqtt-viewer
+Environment=TERM=screen-256color
+ExecStart=/usr/bin/tmux -L zendure new-session -d -s zendure -x 200 -y 50 "%h/zendure-mqtt-viewer/.venv/bin/python -m zendure_mqtt_viewer"
+ExecStop=/usr/bin/tmux -L zendure kill-server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
