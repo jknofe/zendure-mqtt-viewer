@@ -56,23 +56,6 @@ class FieldRecord:
     note: str = ""
 
 
-def format_age(now: float, wall_time: Optional[float]) -> str:
-    if wall_time is None:
-        return "never"
-    delta = now - wall_time
-    if delta < 0:
-        delta = 0.0
-    if delta < 1:
-        return "just now"
-    if delta < 60:
-        return f"{delta:.0f}s ago"
-    if delta < 3600:
-        return f"{delta / 60:.0f}m ago"
-    if delta < 86400:
-        return f"{delta / 3600:.1f}h ago"
-    return f"{delta / 86400:.1f}d ago"
-
-
 class DashboardState:
     """Accumulates decoded field values across many delta messages.
 
@@ -92,15 +75,11 @@ class DashboardState:
         self.parse_errors: int = 0
         self.last_message_wall_time: Optional[float] = None
         self.connected: bool = False
-        # last_error / connection_error are a record for the log and for
-        # tests, not something the dashboard draws - no error string is ever
-        # rendered into a frame.
-        self.last_error: str = ""
-        # Link-level problem (refused connect, unexpected disconnect). Kept
-        # separate from last_error, which is about message *content*: a bad
-        # payload says nothing about the connection and must not clear it.
+        # Why the link is down, for the exit notice. Kept separate from parse
+        # errors, which are about message *content*: a bad payload says
+        # nothing about the connection and must not clear it. No error string
+        # is ever drawn into a frame.
         self.connection_error: str = ""
-        # When a full-report request was last sent (--allow-refresh only).
         self.last_refresh_request: Optional[float] = None
 
     # -- ingestion ----------------------------------------------------
@@ -108,10 +87,8 @@ class DashboardState:
     def note_parse_error(self, reason: str = "") -> None:
         self.parse_errors += 1
         if reason:
-            self.last_error = reason
-            # Logged here rather than in each caller so a malformed line is
-            # recorded identically whether it arrived over MQTT or out of a
-            # replay file.
+            # Logged here, not in each caller, so a malformed line reads the
+            # same whether it came over MQTT or out of a replay file.
             logger.warning("parse error: %s", reason)
 
     # -- connection status --------------------------------------------

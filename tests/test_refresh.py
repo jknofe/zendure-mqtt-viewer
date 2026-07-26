@@ -1,11 +1,10 @@
 """The one message this tool may send, and everything that must still be refused.
 
 `soh`, `maxTemp` and `softVersion` only arrive in a full report, which the hub
-sends when asked. Asking means publishing - so the exception is armed by
-value: the client is handed one exact (topic, payload) pair and refuses
-anything else, and publish() still raises for every caller. These tests pin
-that the hole is exactly one message wide, and that it does not exist at all
-without --allow-refresh.
+sends when asked. Asking means publishing - so it is armed by value: the
+client holds one exact (topic, payload) pair and refuses anything else, and
+publish() still raises for every caller. These tests pin that the hole is
+exactly one message wide.
 
 No network: paho's publish is stubbed and the callbacks are driven directly.
 """
@@ -45,10 +44,10 @@ def sent(monkeypatch):
     return calls
 
 
-def _connected(allow_refresh=True):
+def _connected():
     state = DashboardState()
     state.note_connected()
-    return Subscriber(CFG, state, allow_refresh=allow_refresh), state
+    return Subscriber(CFG, state), state
 
 
 # ---------------------------------------------------------------------------
@@ -111,16 +110,19 @@ def test_will_set_is_still_refused(sent):
 
 
 # ---------------------------------------------------------------------------
-# Without the flag there is no publish path at all
+# Arming is per client, and only Subscriber does it
 # ---------------------------------------------------------------------------
 
 
-def test_nothing_is_armed_without_allow_refresh(sent):
-    sub, _ = _connected(allow_refresh=False)
-    assert sub.request_full_report(now=1000.0) is False
-    assert sent == []
+def test_an_unarmed_client_cannot_publish_at_all(sent):
+    # The arming is what makes the one message possible; a client built
+    # without it (anything but Subscriber) has no publish path whatsoever.
+    from zendure_mqtt_viewer.mqtt_client import GuardedMqttClient
+
+    client = GuardedMqttClient(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     with pytest.raises(PublishForbiddenError):
-        sub._client.send_allowed_request(READ_TOPIC, REFRESH_PAYLOAD)
+        client.send_allowed_request(READ_TOPIC, REFRESH_PAYLOAD)
+    assert sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -161,26 +163,15 @@ def test_a_broker_error_is_swallowed_and_logged(monkeypatch, sent):
 # ---------------------------------------------------------------------------
 
 
-def test_the_flag_is_off_by_default():
-    from zendure_mqtt_viewer.cli import build_arg_parser
-
-    parser = build_arg_parser()
-    assert parser.parse_args([]).allow_refresh is False
-    assert parser.parse_args(["--allow-refresh"]).allow_refresh is True
-
-
-def _status(state, now=1000.0, allow_refresh=True, mode="live"):
-    frame = layout.build_frame(
-        state, "overview", 100, 27, now, mode=mode, allow_refresh=allow_refresh
-    )
+def _status(state, now=1000.0, mode="live"):
+    frame = layout.build_frame(state, "overview", 100, 27, now, mode=mode)
     return frame.to_text().splitlines()[-2]
 
 
-def test_the_key_hint_appears_only_when_refresh_is_enabled():
+def test_the_key_hint_is_offered_in_live_mode():
     state = DashboardState()
-    assert "[r] refresh" in _status(state, allow_refresh=True)
-    assert "[r] refresh" not in _status(state, allow_refresh=False)
-    assert "[q] quit" in _status(state, allow_refresh=False)
+    assert "[r] refresh" in _status(state)
+    assert "[q] quit" in _status(state)
 
 
 def test_the_status_bar_acknowledges_a_request_then_goes_back(sent):
@@ -194,15 +185,13 @@ def test_the_status_bar_acknowledges_a_request_then_goes_back(sent):
 
 def test_replay_mode_never_offers_refresh():
     state = DashboardState()
-    assert "[r] refresh" not in _status(state, allow_refresh=True, mode="replay")
+    assert "[r] refresh" not in _status(state, mode="replay")
 
 
 def test_the_acknowledgement_does_not_change_the_frame_geometry(sent):
     sub, state = _connected()
     sub.request_full_report(now=1000.0)
     for cols, rows in [(54, 14), (80, 24), (100, 27)]:
-        frame = layout.build_frame(
-            state, "overview", cols, rows, 1000.5, mode="live", allow_refresh=True
-        )
+        frame = layout.build_frame(state, "overview", cols, rows, 1000.5, mode="live")
         assert frame.line_widths_ok()
         assert len(frame.lines) == rows

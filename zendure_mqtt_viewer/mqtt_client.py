@@ -1,18 +1,14 @@
 """MQTT I/O layer - it cannot command the device, by construction.
 
-SAFETY: the write topic (`iot/.../properties/write`) commands a real battery
-and inverter, and nothing here can reach it. GuardedMqttClient overrides
-publish()/will_set() to raise unconditionally, regardless of what calls them
-or with what arguments - see tests/test_mqtt_guard.py.
+SAFETY: the write topic (`iot/.../properties/write`) drives a real battery
+and inverter, and nothing here can reach it. publish()/will_set() raise
+unconditionally, whatever the arguments - see tests/test_mqtt_guard.py.
 
-There is exactly one exception, and it is not a device command: an opt-in
-"send me all your properties" request (`--allow-refresh`). It is allow-listed
-by *value*, not by permission - the client is handed one exact
-(topic, payload) pair at construction time and send_allowed_request() refuses
-anything that is not character-for-character that pair. publish() itself
-still raises for every caller, so there is no general write path to misuse:
-a bug or a future edit cannot turn "refresh" into "set output to 800 W".
-Without the flag no publish path exists at all.
+The one message this tool can send is a request for a full report, which is
+not a device command. It is allow-listed by *value*: the client holds one
+exact (topic, payload) pair and send_allowed_request() refuses anything that
+is not character-for-character that pair, so no edit can widen "refresh"
+into "set output to 800 W" without defeating that check.
 """
 from __future__ import annotations
 
@@ -32,16 +28,12 @@ class PublishForbiddenError(RuntimeError):
     """Raised the instant anything tries to write to the broker."""
 
 
-# The one message this tool may ever send, and only with --allow-refresh.
-# It asks the hub to report every property it has; some fields (soh, maxTemp,
-# softVersion) only ever arrive in such a full report. Spelled as a literal
-# rather than json.dumps(...) so the armed value cannot drift with a
-# formatting change - the hub matches on the exact string.
+# The one message this tool may ever send: report every property you have.
+# soh, maxTemp and softVersion only ever arrive in such a full report. A
+# literal, not json.dumps(...), so the armed value cannot drift.
 REFRESH_PAYLOAD = '{"properties": ["getAll"]}'
 
-# The hub answers a request within a few seconds. Anything faster than this
-# is a held-down key, not a user intent, and there is nothing to gain from
-# asking a device twice in the same breath.
+# The hub answers within a few seconds; anything faster is a held-down key.
 REFRESH_MIN_INTERVAL = 10.0
 
 
@@ -70,10 +62,9 @@ class GuardedMqttClient(mqtt.Client):
     including an empty payload, a retained-clear, or configuring a will
     message that the broker would publish on our behalf - is forbidden.
 
-    ``allowed_request`` optionally arms exactly one message: a
-    ``(topic, payload)`` pair that ``send_allowed_request`` will accept and
-    nothing else will. Left at None (the default) there is no way to publish
-    anything at all.
+    ``allowed_request`` arms exactly one ``(topic, payload)`` pair, which
+    ``send_allowed_request`` will accept and nothing else will. Left at None
+    there is no way to publish anything at all.
     """
 
     def __init__(self, *args, allowed_request: Optional[tuple[str, str]] = None, **kwargs):
@@ -122,18 +113,16 @@ class Subscriber:
         config: BrokerConfig,
         state: DashboardState,
         on_update: Optional[Callable[[], None]] = None,
-        allow_refresh: bool = False,
     ) -> None:
         self.config = config
         self.state = state
         self.on_update = on_update
-        self.allow_refresh = allow_refresh
         self._last_refresh: Optional[float] = None
 
         self._client = GuardedMqttClient(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             protocol=mqtt.MQTTv311,
-            allowed_request=(config.read_topic, REFRESH_PAYLOAD) if allow_refresh else None,
+            allowed_request=(config.read_topic, REFRESH_PAYLOAD),
         )
         if config.username:
             self._client.username_pw_set(config.username, config.password)
@@ -155,13 +144,10 @@ class Subscriber:
     def request_full_report(self, now: Optional[float] = None) -> bool:
         """Ask the hub to report everything. True if a request went out.
 
-        Returns False (never raises) for every "not now" case - refresh not
-        enabled, not connected, or asked again too soon - because the caller
-        is a keypress handler inside the draw loop and a dashboard must not
-        fall over because a key was pressed at an awkward moment.
+        Returns False rather than raising for every "not now" case: the
+        caller is a keypress handler inside the draw loop, and a dashboard
+        must not fall over because a key was pressed at an awkward moment.
         """
-        if not self.allow_refresh:
-            return False
         now = time.time() if now is None else now
         if self._last_refresh is not None and now - self._last_refresh < REFRESH_MIN_INTERVAL:
             return False

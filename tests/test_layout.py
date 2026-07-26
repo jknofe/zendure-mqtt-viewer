@@ -345,6 +345,11 @@ def test_short_age_buckets():
     assert layout.short_age(now=100.0 + 125, wall_time=100.0) == "2m"
 
 
+def test_short_age_does_not_go_negative_on_clock_skew():
+    # a hub timestamp slightly ahead of us must not render "-5s"
+    assert layout.short_age(now=100.0, wall_time=105.0) == "now"
+
+
 def test_is_stale_threshold():
     assert layout.is_stale(now=100.0, wall_time=None) is False  # never-seen isn't "stale"
     assert layout.is_stale(now=110.0, wall_time=100.0, threshold=30) is False

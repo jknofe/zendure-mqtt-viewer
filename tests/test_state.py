@@ -7,7 +7,6 @@ from zendure_mqtt_viewer import decode
 from zendure_mqtt_viewer.state import (
     DashboardState,
     MalformedMessageError,
-    format_age,
     parse_line,
 )
 
@@ -94,7 +93,6 @@ def test_note_parse_error_increments_counter_and_never_raises():
     state.note_parse_error("boom")
     state.note_parse_error("boom again")
     assert state.parse_errors == 2
-    assert state.last_error == "boom again"
     # a parse error must not touch messages_received or any field
     assert state.messages_received == 0
     assert state.hub == {}
@@ -171,29 +169,3 @@ def test_remain_time_sentinel_round_trips_through_state():
         wall_time=1.0,
     )
     assert state.hub["remainInputTime"].display == "unknown/infinite"
-
-
-# ---------------------------------------------------------------------------
-# Age formatting
-# ---------------------------------------------------------------------------
-
-
-def test_format_age_never_seen():
-    assert format_age(now=100.0, wall_time=None) == "never"
-
-
-def test_format_age_just_now():
-    assert format_age(now=100.2, wall_time=100.0) == "just now"
-
-
-def test_format_age_seconds():
-    assert format_age(now=110.0, wall_time=100.0) == "10s ago"
-
-
-def test_format_age_minutes():
-    assert format_age(now=100.0 + 130, wall_time=100.0) == "2m ago"
-
-
-def test_format_age_does_not_go_negative_on_clock_skew():
-    # a message timestamp slightly ahead of 'now' shouldn't render "-1s ago"
-    assert format_age(now=100.0, wall_time=105.0) == "just now"

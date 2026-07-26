@@ -99,12 +99,9 @@ _REFRESH_KEYS = {ord("r"), ord("R")}
 # How often to checkpoint last-seen values while running.
 PERSIST_INTERVAL = 60.0
 
-# Belt-and-suspenders Ctrl-C handling: Python's default SIGINT handler turns
-# it into a KeyboardInterrupt raised between bytecode instructions, which
-# normally propagates fine through curses.wrapper's try/finally. This flag
-# is a second, more explicit path so a signal arriving while blocked inside
-# a C-level getch() call is still noticed at the very next loop iteration
-# instead of depending on exactly when/whether that call gets interrupted.
+# Second, explicit Ctrl-C path: a signal arriving while blocked in a C-level
+# getch() is noticed at the next loop iteration, rather than depending on
+# exactly when that call gets interrupted.
 _interrupted = False
 
 
@@ -154,9 +151,8 @@ def run(
     checkpoint last-seen values, so a kill -9 or a laptop lid closing still
     leaves a recent cache behind.
 
-    ``on_refresh`` (if given) is what the ``r`` key calls: a request for a
-    full report. Absent it, ``r`` does nothing and the hint is not shown -
-    the key exists only when --allow-refresh armed it.
+    ``on_refresh`` is what the ``r`` key calls: a request for a full
+    report. Absent (replay, which has no broker), ``r`` does nothing.
     """
     global _interrupted
     _interrupted = False
@@ -232,7 +228,6 @@ def run(
                     now,
                     mode=mode,
                     device_id=device_id,
-                    allow_refresh=on_refresh is not None,
                 )
                 _blit(stdscr, frame)
                 last_draw = now

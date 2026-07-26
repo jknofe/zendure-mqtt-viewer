@@ -33,8 +33,9 @@ _ENUM_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
 
 # Span.attr is a space-separated token set: at most one colour name from
 # COLORS, plus any emphasis flags. tui.py resolves it to curses attributes;
-# plain-text output ignores attrs entirely, so colour never changes a single
-# character of what --once prints or what the layout tests assert on.
+# plain-text output ignores attrs, so colour never changes a character of
+# what --once prints. These two tuples are the vocabulary tui.py mirrors -
+# used by tests to assert the two ends agree, not dead weight.
 COLORS = ("accent", "ok", "warn", "error", "info")
 EMPHASIS = ("normal", "bold", "dim", "reverse", "muted")
 
@@ -89,10 +90,6 @@ def _row(spans: list[Span], cols: int) -> list[Span]:
             out.append(Span(fit(sp.text, remaining), sp.attr))
             remaining = 0
     return out
-
-
-def blank_frame(cols: int, rows: int) -> Frame:
-    return Frame(cols, rows, [[Span(" " * cols)] for _ in range(rows)])
 
 
 # ---------------------------------------------------------------------------
@@ -164,20 +161,17 @@ def gauge_spans(percent: Optional[float], width: int = 14) -> list[Span]:
 
 
 # ---------------------------------------------------------------------------
-# Power-flow arrows
-#
-# The watts are written *inside* the arrow rather than beside a label, so the
-# diagram reads as one thing: how much is moving, and which way.
+# Power-flow arrows: the watts ride inside the arrow, so how much is moving
+# and which way read as one thing.
 #
 #      Solar
 #        │
-#     491 W                     [ HUB ] ── 276 W ──▶ Home
+#     491 W          [ HUB ] ── 276 W ──▶ Home
 #        │
 #        ▼
 #
-# Both arrows shrink instead of overflowing: the vertical one drops its stem
-# segments on a short panel, the horizontal one drops shaft dashes on a
-# narrow one. The value itself is never what gets dropped.
+# Both shrink rather than overflow - the vertical one drops stem segments,
+# the horizontal one drops shaft dashes. The value is never what is dropped.
 # ---------------------------------------------------------------------------
 
 
@@ -313,31 +307,24 @@ def _tab_bar(cols: int, active_index: int) -> list[Span]:
     return [Span("│", "muted")] + _row(spans, inner) + [Span("│", "muted")]
 
 
-# How long the status bar acknowledges a refresh request. Long enough to be
-# read, short enough that the key hint is back before you would press it again
-# (REFRESH_MIN_INTERVAL is 10s).
+# Long enough to read, short enough that the hint is back before you would
+# press again (REFRESH_MIN_INTERVAL is 10s).
 REFRESH_ACK_SECONDS = 4.0
 
 
-def _hint_text(state: DashboardState, now: float, allow_refresh: bool) -> str:
+def _hint_text(state: DashboardState, now: float, mode: str) -> str:
     """The right-hand key hints, which double as the refresh acknowledgement."""
-    if not allow_refresh:
-        return " [1-4/Tab] switch  [q] quit "
+    if mode == "replay":
+        return " [1-4/Tab] switch  [q] quit "  # nothing to ask a file for
     sent = state.last_refresh_request
     if sent is not None and 0 <= now - sent < REFRESH_ACK_SECONDS:
-        # Not an error and not a value: just the app saying "heard you". It
-        # lives in the hint's own cells, so nothing else moves.
+        # Just the app saying "heard you", in the hint's own cells so
+        # nothing else moves.
         return " refresh sent  [q] quit "
     return " [1-4/Tab] switch  [r] refresh  [q] quit "
 
 
-def _status_bar(
-    cols: int,
-    state: DashboardState,
-    now: float,
-    mode: str,
-    allow_refresh: bool = False,
-) -> list[Span]:
+def _status_bar(cols: int, state: DashboardState, now: float, mode: str) -> list[Span]:
     since = short_age(now, state.last_message_wall_time)
     inner = cols - 2
 
@@ -352,7 +339,7 @@ def _status_bar(
         left = f" replay · {state.messages_received} lines · errors {state.parse_errors} "
     else:
         left = f" msgs {state.messages_received} · errors {state.parse_errors} · last {since} "
-    hint = _hint_text(state, now, allow_refresh and mode != "replay")
+    hint = _hint_text(state, now, mode)
     gap = max(1, inner - len(left) - len(hint))
     content = fit(left + " " * gap + hint, inner)
     cut = min(len(left), len(content))
@@ -775,7 +762,6 @@ def build_frame(
     now: float,
     mode: str = "live",
     device_id: str = "",
-    allow_refresh: bool = False,
 ) -> Frame:
     """Build the full one-screen dashboard Frame for the given tab.
 
@@ -830,7 +816,7 @@ def build_frame(
             lines.append(_row([Span("│", "muted")] + line + [Span("│", "muted")], cols))
         lines.append(_divider(cols))
 
-    lines.append(_status_bar(cols, state, now, mode, allow_refresh))
+    lines.append(_status_bar(cols, state, now, mode))
     lines.append(_bottom_border(cols))
 
     # Safety net: force exact row/col count no matter what the section

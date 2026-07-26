@@ -101,7 +101,6 @@ fmt_on_off = make_enum_formatter(ON_OFF)
 SECTION_POWER = "power"
 SECTION_HUB_STATE = "hub_state"
 SECTION_HUB_SETTINGS = "hub_settings"
-SECTION_UNDECODED = "undecoded"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -163,16 +162,6 @@ HUB_FIELD_SPECS: dict[str, FieldSpec] = {
         FieldSpec("masterSoftVersion", "Soft Version", SECTION_HUB_SETTINGS, fmt_raw),
         FieldSpec("masterhaerVersion", "Hard Version", SECTION_HUB_SETTINGS, fmt_raw),
     ]
-}
-
-# The five "*Cycle" counters: no documentation found anywhere. Always show
-# raw in the Undecoded section, never invent a meaning for them.
-KNOWN_UNDOCUMENTED_FIELDS = {
-    "outputHomePowerCycle",
-    "packInputPowerCycle",
-    "outputPackPowerCycle",
-    "solarPower1Cycle",
-    "solarPower2Cycle",
 }
 
 # Top-level (not under "properties") fields that carry live device info and

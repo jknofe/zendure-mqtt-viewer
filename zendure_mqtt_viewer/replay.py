@@ -32,7 +32,6 @@ def replay_file(
     prev_ts: Optional[float] = None
     with path.open("r", encoding="utf-8") as f:
         for line in f:
-            wall_time = time.time()
             try:
                 payload = parse_line(line)
             except MalformedMessageError as exc:

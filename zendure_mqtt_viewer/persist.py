@@ -1,20 +1,16 @@
 """Last-seen value cache.
 
-The report stream is delta-only and some fields are broadcast rarely -
-packState, minSoc, socSet, packNum, the firmware versions. A freshly started
-process therefore shows "--" for them until the hub happens to send one,
-which can be many minutes. This module writes the last known values to a
-small JSON file on exit (and periodically) and loads them back at startup so
-the dashboard resumes where it left off instead of from scratch.
+The stream is delta-only and rare fields (packState, minSoc, socSet, the
+firmware versions) can take many minutes to arrive, so a fresh start shows
+"--" for them. This writes the last known values to a small JSON file and
+loads them back at startup.
 
-Restored values keep their original timestamps, so they are labelled with
-their true age and dimmed as stale - the cache fills the blind window, it
-does not pretend to be live data.
+Restored values keep their original timestamps: the cache fills the blind
+window, it does not pretend to be live data.
 
-Nothing here is load-bearing: every failure path degrades to "no cache",
-never to an error the user has to deal with. A dashboard that starts with
-empty fields is a minor annoyance; one that refuses to start because a cache
-file is corrupt is a bug.
+Nothing here is load-bearing - every failure path degrades to "no cache".
+A dashboard that starts empty is an annoyance; one that refuses to start
+because a cache file is corrupt is a bug.
 """
 from __future__ import annotations
 

@@ -42,8 +42,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="zendure-mqtt-viewer",
         description=(
             "Live dashboard for a Zendure SolarFlow hub over MQTT. This tool "
-            "never sends a device command; with --allow-refresh it can send "
-            "one request for a full report, and nothing else."
+            "never sends a device command; the only message it can send is a "
+            "request for a full report, on the [r] key."
         ),
     )
     p.add_argument("--config", metavar="PATH", help="path to config.toml (default: ~/.config/zendure-mqtt-viewer/config.toml)")
@@ -59,16 +59,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--no-cache",
         action="store_true",
         help="start from an empty dashboard and do not save last-seen values",
-    )
-    p.add_argument(
-        "--allow-refresh",
-        action="store_true",
-        help=(
-            "enable the [r] key, which asks the hub to report every property "
-            "(soh and friends only ever arrive in such a full report). This is "
-            "the only message this tool can send, and it is never a device "
-            "command; without this flag it cannot publish at all"
-        ),
     )
     p.add_argument(
         "--error-log",
@@ -219,8 +209,7 @@ def _run_live(args: argparse.Namespace) -> int:
         persist.load(state, cache_path)
         on_persist = lambda: persist.save(state, cache_path)  # noqa: E731
 
-    subscriber = Subscriber(cfg, state, allow_refresh=args.allow_refresh)
-    on_refresh = subscriber.request_full_report if args.allow_refresh else None
+    subscriber = Subscriber(cfg, state)
     try:
         subscriber.start()
     except OSError as exc:
@@ -237,7 +226,7 @@ def _run_live(args: argparse.Namespace) -> int:
             args,
             device_id=cfg.device_id,
             on_persist=on_persist,
-            on_refresh=on_refresh,
+            on_refresh=subscriber.request_full_report,
         )
     finally:
         subscriber.stop()

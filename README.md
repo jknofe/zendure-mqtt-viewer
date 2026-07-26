@@ -19,7 +19,7 @@ cannot reach it even by accident:
 - `tests/test_refresh.py` asserts that the write topic is refused even
   through the one path that is allowed to publish (below).
 
-### The single exception: `--allow-refresh`
+### The single exception: the `r` key
 
 Some fields - `soh` (battery state of health), `maxTemp`, `softVersion` -
 are **never** sent in the normal delta stream. They only appear in a full
@@ -27,8 +27,8 @@ report, which the hub sends when asked. Measured here: none of the three
 arrived in 30 minutes of passive listening; after one request, all three
 arrived in 1.9 seconds.
 
-Asking means publishing, so it is off by default and deliberately narrow.
-With `--allow-refresh`, the `r` key sends exactly this and nothing else:
+Asking means publishing, so it is deliberately narrow. `r` sends exactly
+this and nothing else:
 
 ```
 topic:   iot/<product_id>/<device_id>/properties/read
@@ -38,11 +38,11 @@ payload: {"properties": ["getAll"]}
 That is a request for data, not a device command. It is allow-listed **by
 value**: `GuardedMqttClient` is handed that one `(topic, payload)` pair at
 construction and refuses anything that is not character-for-character
-identical, `publish()` still raises for every caller, and without the flag
-nothing is armed at all. So a future edit cannot widen "refresh" into "set
-the output limit" - it would have to defeat the value check to do it.
-Requests are rate-limited to one per 10 seconds and ignored while
-disconnected.
+identical, and `publish()` still raises for every caller. So a future edit
+cannot widen "refresh" into "set the output limit" without defeating the
+value check. Requests are rate-limited to one per 10 seconds and ignored
+while disconnected. Replay mode never offers the key - there is nothing to
+ask a file for.
 
 Note the topic asymmetry: reports arrive on `/<product_id>/...` with a
 leading slash and no prefix, while requests go to `iot/<product_id>/...`.
@@ -75,9 +75,9 @@ switch between - it never scrolls, and only the active tab is drawn:
 
 A status bar is pinned to the bottom row on every tab: connection state,
 message count, parse error count, time since the last message, and key
-hints. Switch tabs with `1`-`4` or `Tab`/`Shift-Tab`, quit with `q`. With
-`--allow-refresh`, `r` asks the hub for a full report (see above) and the
-hint area briefly reads `refresh sent`.
+hints. Switch tabs with `1`-`4` or `Tab`/`Shift-Tab`, quit with `q`, and
+`r` asks the hub for a full report (see above) - the hint area briefly
+reads `refresh sent`.
 
 Colour carries meaning rather than decoration: the SoC gauge runs red
 below 20% / yellow below 50% / green above, charging is green and

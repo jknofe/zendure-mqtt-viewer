@@ -113,10 +113,19 @@ def test_on_off_enum():
 # ---------------------------------------------------------------------------
 
 
+# The five "*Cycle" counters: no documentation found anywhere. They must fall
+# through to the Undecoded section rather than be given an invented meaning.
+UNDOCUMENTED_CYCLE_FIELDS = {
+    "outputHomePowerCycle",
+    "packInputPowerCycle",
+    "outputPackPowerCycle",
+    "solarPower1Cycle",
+    "solarPower2Cycle",
+}
+
+
 def test_undocumented_cycle_fields_are_not_in_the_decoded_registry():
-    # These must fall through to the Undecoded section, not be silently
-    # given an invented meaning.
-    for key in decode.KNOWN_UNDOCUMENTED_FIELDS:
+    for key in UNDOCUMENTED_CYCLE_FIELDS:
         assert key not in decode.HUB_FIELD_SPECS
 
 

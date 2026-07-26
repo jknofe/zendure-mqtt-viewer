@@ -1,23 +1,13 @@
 """Error log: problems go to a file, never to the screen.
 
-The dashboard owns the terminal. Anything written to stdout/stderr while
-curses is drawing lands on top of the frame, and the next redraw only
-repaints the cells the layout knows about, so the damage stays there. Two
-separate things used to put error text on screen:
+Anything written to stderr while curses is drawing lands on top of the
+frame and stays there, so the package logger gets a file handler and
+``propagate = False``. Without that, ``logging.lastResort`` prints every
+WARNING to stderr, straight across the dashboard.
 
-  - logging with no handler configured. ``logging.lastResort`` prints every
-    WARNING and above straight to stderr, so a single refused connect
-    painted a log line across the middle of the dashboard;
-  - the dashboard itself, which rendered the broker's reason string into
-    the status bar in red.
-
-Both are gone. The screen shows measurements and the link state; every
-error goes here, timestamped, with the detail the screen never had room
-for anyway.
-
-Nothing in this module is allowed to be load-bearing. If the log file
-cannot be opened, logging is silenced and the dashboard runs as normal -
-refusing to start over a log file would be a worse bug than a missing log.
+Nothing here is load-bearing: if the file cannot be opened, logging is
+silenced and the dashboard runs as normal. Refusing to start over a log
+file would be a worse bug than a missing log.
 """
 from __future__ import annotations
 
