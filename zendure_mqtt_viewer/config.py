@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import dataclasses
 import os
-import tomllib
 from pathlib import Path
 from typing import Optional
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11 (Debian 11 ships 3.9)
+    # tomli is the same parser tomllib was adopted from, with the same API,
+    # so everything below is unchanged. Declared in requirements.txt with a
+    # python_version marker, so modern interpreters never install it.
+    import tomli as tomllib  # type: ignore[no-redef]
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "zendure-mqtt-viewer" / "config.toml"
 

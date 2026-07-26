@@ -116,9 +116,11 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Requires Python 3.11+ (developed against 3.14) with a terminal that
+Requires Python 3.9+ (developed against 3.14) with a terminal that
 supports `curses` (standard on macOS/Linux terminals). The only runtime
-dependency is `paho-mqtt`; everything else is the standard library.
+dependency is `paho-mqtt`, plus `tomli` on Python older than 3.11, where
+`tomllib` is not yet in the standard library. That covers Debian 11 and
+Raspberry Pi OS bullseye, which still ship 3.9.
 
 ### Config file
 
