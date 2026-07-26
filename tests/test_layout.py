@@ -84,7 +84,7 @@ def test_active_tab_label_is_bracketed_and_reverse_video():
     assert "[2] Hub" in tab_bar_text
 
     tab_bar_line = frame.lines[1]
-    reverse_spans = [sp for sp in tab_bar_line if sp.attr == "reverse"]
+    reverse_spans = [sp for sp in tab_bar_line if "reverse" in sp.attr.split()]
     assert reverse_spans, "expected at least one reverse-video span on the tab bar"
     assert any("Hub" in sp.text for sp in reverse_spans)
 
@@ -135,6 +135,57 @@ def test_degenerate_1x1_terminal_does_not_crash():
     frame = layout.build_frame(state, "overview", 1, 1, now=1784980800.0, mode="replay")
     assert len(frame.lines) == 1
     assert len(frame.lines[0][0].text) == 1
+
+
+# ---------------------------------------------------------------------------
+# Charge/discharge direction
+#
+# Zendure names the two pack power fields from the hub's point of view:
+# outputPackPower is the hub pushing into the pack (charging) and
+# packInputPower is the pack feeding the hub (discharging). The samples
+# confirm it: packState=1 always comes with outputPackPower > 0, and
+# packState=2 with packInputPower > 0.
+# ---------------------------------------------------------------------------
+
+
+def _overview_text(state: DashboardState) -> str:
+    frame = layout.build_frame(state, "overview", 100, 27, now=1784980800.0, mode="replay")
+    return "\n".join("".join(sp.text for sp in line) for line in frame.lines)
+
+
+def _state_with(props: dict) -> DashboardState:
+    state = DashboardState()
+    state.apply_payload({"timestamp": 1, "properties": props}, wall_time=1784980800.0)
+    return state
+
+
+def test_charging_is_reported_with_the_hub_to_pack_power():
+    text = _overview_text(_state_with({"packState": 1, "outputPackPower": 20, "packInputPower": 0}))
+    assert "Charging" in text
+    assert "Discharging" not in text
+    assert "20 W" in text
+
+
+def test_discharging_is_reported_with_the_pack_to_hub_power():
+    text = _overview_text(_state_with({"packState": 2, "packInputPower": 355, "outputPackPower": 0}))
+    assert "Discharging" in text
+    assert "355 W" in text
+
+
+@pytest.mark.parametrize(
+    "props,expected",
+    [
+        ({"outputPackPower": 20}, "Charging"),
+        ({"packInputPower": 355}, "Discharging"),
+    ],
+)
+def test_direction_without_packstate_falls_back_to_the_right_field(props, expected):
+    # packState is not in every delta, so the power fields alone must give
+    # the same answer they would with it.
+    text = _overview_text(_state_with(props))
+    assert expected in text
+    if expected == "Charging":
+        assert "Discharging" not in text
 
 
 # ---------------------------------------------------------------------------

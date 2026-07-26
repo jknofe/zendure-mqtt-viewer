@@ -10,9 +10,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from typing import Any, Optional
 
 from . import decode
+
+# Errors are recorded, never rendered: the dashboard shows counts and link
+# state, the detail goes to the log file. See errorlog.py. Until that module
+# configures a handler this logger discards everything (NullHandler in
+# __init__), so importing state.py still costs no I/O.
+logger = logging.getLogger(__name__)
 
 
 class MalformedMessageError(ValueError):
@@ -85,7 +92,14 @@ class DashboardState:
         self.parse_errors: int = 0
         self.last_message_wall_time: Optional[float] = None
         self.connected: bool = False
+        # last_error / connection_error are a record for the log and for
+        # tests, not something the dashboard draws - no error string is ever
+        # rendered into a frame.
         self.last_error: str = ""
+        # Link-level problem (refused connect, unexpected disconnect). Kept
+        # separate from last_error, which is about message *content*: a bad
+        # payload says nothing about the connection and must not clear it.
+        self.connection_error: str = ""
 
     # -- ingestion ----------------------------------------------------
 
@@ -93,6 +107,21 @@ class DashboardState:
         self.parse_errors += 1
         if reason:
             self.last_error = reason
+            # Logged here rather than in each caller so a malformed line is
+            # recorded identically whether it arrived over MQTT or out of a
+            # replay file.
+            logger.warning("parse error: %s", reason)
+
+    # -- connection status --------------------------------------------
+
+    def note_connected(self) -> None:
+        self.connected = True
+        self.connection_error = ""
+
+    def note_connection_error(self, reason: str) -> None:
+        """Record why the link is down. Never sets connected=True."""
+        self.connected = False
+        self.connection_error = reason or "connection failed"
 
     def apply_payload(self, payload: dict, wall_time: float) -> None:
         """Merge one already-parsed payload dict into the running state."""
@@ -183,3 +212,111 @@ class DashboardState:
             wall_time=wall_time,
             note=source,
         )
+
+    # -- snapshot / restore ---------------------------------------------
+    #
+    # The stream is delta-only: rare fields (packState, minSoc, socSet,
+    # packNum, firmware versions) are re-broadcast infrequently, so a fresh
+    # process can sit for a long time with "--" where those values belong.
+    # Carrying the last known values across restarts removes that blind
+    # window. Only the *raw* values are persisted, never the formatted text -
+    # display strings are re-derived through the same FieldSpec used live, so
+    # a decode fix applies to restored values too instead of resurrecting the
+    # old wording from the cache file.
+
+    def to_snapshot(self) -> dict:
+        """A JSON-serializable dump of every last-seen value."""
+
+        def dump(bucket: dict[str, FieldRecord]) -> dict:
+            return {
+                key: {
+                    "raw": rec.raw,
+                    "msg_ts": rec.msg_ts,
+                    "wall_time": rec.wall_time,
+                    "note": rec.note,
+                }
+                for key, rec in bucket.items()
+            }
+
+        return {
+            "latest_msg_ts": self.latest_msg_ts,
+            "last_message_wall_time": self.last_message_wall_time,
+            "hub": dump(self.hub),
+            "undecoded": dump(self.undecoded),
+            "packs": {sn: dump(fields) for sn, fields in self.packs.items()},
+            "pack_order": list(self.pack_order),
+        }
+
+    def restore_snapshot(self, data: dict) -> int:
+        """Merge a snapshot back in. Returns the number of fields restored.
+
+        Restored records keep their original wall_time, so the age column and
+        the staleness dimming tell the truth: these are old readings, not
+        something that just arrived. Live messages overwrite them key by key
+        as they come in. Anything malformed is skipped rather than raising -
+        a damaged cache file must never stop the dashboard from starting.
+        """
+        if not isinstance(data, dict):
+            return 0
+        restored = 0
+
+        def load(bucket: dict[str, FieldRecord], entries, resolve_spec) -> int:
+            n = 0
+            if not isinstance(entries, dict):
+                return 0
+            for key, entry in entries.items():
+                if not isinstance(entry, dict) or "raw" not in entry:
+                    continue
+                wall_time = entry.get("wall_time")
+                if not isinstance(wall_time, (int, float)):
+                    continue
+                msg_ts = entry.get("msg_ts")
+                if not isinstance(msg_ts, (int, float)):
+                    msg_ts = None
+                raw = entry["raw"]
+                spec = resolve_spec(key)
+                if spec is not None:
+                    self._store(bucket, spec, raw, msg_ts, float(wall_time))
+                else:
+                    note = entry.get("note")
+                    bucket[key] = FieldRecord(
+                        raw=raw,
+                        display=decode.fmt_raw(raw),
+                        msg_ts=msg_ts,
+                        wall_time=float(wall_time),
+                        note=note if isinstance(note, str) else "",
+                    )
+                n += 1
+            return n
+
+        restored += load(self.hub, data.get("hub"), _resolve_hub_spec)
+        restored += load(self.undecoded, data.get("undecoded"), lambda key: None)
+
+        packs = data.get("packs")
+        if isinstance(packs, dict):
+            for sn, fields in packs.items():
+                if sn not in self.packs:
+                    self.packs[sn] = {}
+                    self.pack_order.append(sn)
+                restored += load(self.packs[sn], fields, decode.PACK_FIELD_SPECS.get)
+
+        # Keep pack_order deterministic across restarts.
+        for sn in data.get("pack_order") or []:
+            if sn in self.packs and sn in self.pack_order:
+                self.pack_order.remove(sn)
+                self.pack_order.append(sn)
+
+        latest = data.get("latest_msg_ts")
+        if isinstance(latest, (int, float)) and (
+            self.latest_msg_ts is None or latest > self.latest_msg_ts
+        ):
+            self.latest_msg_ts = latest
+
+        # Deliberately *not* restored: last_message_wall_time (nothing has
+        # arrived in this run yet, and the header's "last message" age must
+        # not claim otherwise), messages_received, and parse_errors.
+        return restored
+
+
+def _resolve_hub_spec(key: str):
+    return decode.HUB_FIELD_SPECS.get(key) or decode.TOP_LEVEL_INFO_FIELDS.get(key)

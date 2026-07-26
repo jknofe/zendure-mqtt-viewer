@@ -127,8 +127,11 @@ HUB_FIELD_SPECS: dict[str, FieldSpec] = {
         FieldSpec("solarInputPower", "Solar In (total)", SECTION_POWER, fmt_watts),
         FieldSpec("solarPower1", "Solar In (string 1)", SECTION_POWER, fmt_watts),
         FieldSpec("solarPower2", "Solar In (string 2)", SECTION_POWER, fmt_watts),
-        FieldSpec("packInputPower", "Battery Charging", SECTION_POWER, fmt_watts),
-        FieldSpec("outputPackPower", "Battery Discharging", SECTION_POWER, fmt_watts),
+        # Zendure names these from the hub's point of view: the hub *outputs*
+        # into the pack when charging, and the pack is an *input* to the hub
+        # when discharging. Confirmed against packState in samples/.
+        FieldSpec("packInputPower", "Battery Discharging", SECTION_POWER, fmt_watts),
+        FieldSpec("outputPackPower", "Battery Charging", SECTION_POWER, fmt_watts),
         FieldSpec("outputHomePower", "Output to Home", SECTION_POWER, fmt_watts),
         FieldSpec("gridPower", "Grid Power", SECTION_POWER, fmt_watts, note="meaning unconfirmed"),
         FieldSpec("smartPower", "Smart Power", SECTION_POWER, fmt_watts, note="meaning unconfirmed"),

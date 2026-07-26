@@ -26,6 +26,24 @@ class PublishForbiddenError(RuntimeError):
     """Raised the instant anything tries to write to the broker."""
 
 
+def _is_failure(reason_code) -> bool:
+    """True if a paho reason code means "this did not work".
+
+    paho v2 hands callbacks a ReasonCode object (``.is_failure``); be liberal
+    about ints and None so a paho version change degrades to "nonzero is bad"
+    rather than silently reporting every refusal as a success.
+    """
+    if reason_code is None:
+        return False
+    is_failure = getattr(reason_code, "is_failure", None)
+    if isinstance(is_failure, bool):
+        return is_failure
+    try:
+        return int(reason_code) != 0
+    except (TypeError, ValueError):
+        return False
+
+
 class GuardedMqttClient(mqtt.Client):
     """A paho MQTT client with every broker-write path disabled.
 
@@ -84,15 +102,37 @@ class Subscriber:
     # -- paho callbacks (CallbackAPIVersion.VERSION2 signatures) --------
 
     def _handle_connect(self, client, userdata, connect_flags, reason_code, properties=None):
-        self.state.connected = True
-        client.subscribe(self.config.report_topic, qos=0)
-        logger.info("connected, subscribed to %s", self.config.report_topic)
+        # paho calls on_connect for *refused* connections too, carrying a
+        # failure reason code ("Unspecified error", "Not authorized", ...).
+        # Treating that as connected leaves the dashboard claiming CONNECTED
+        # while subscribing on a dead socket and never receiving a message.
+        if _is_failure(reason_code):
+            self.state.note_connection_error(f"connect refused: {reason_code}")
+            logger.error("connect refused: %s", reason_code)
+            if self.on_update:
+                self.on_update()
+            return
+
+        result, _mid = client.subscribe(self.config.report_topic, qos=0)
+        if result != mqtt.MQTT_ERR_SUCCESS:
+            self.state.note_connection_error(
+                f"subscribe to {self.config.report_topic} failed: {mqtt.error_string(result)}"
+            )
+            logger.error("subscribe failed: %s", mqtt.error_string(result))
+        else:
+            self.state.note_connected()
+            logger.info("connected, subscribed to %s", self.config.report_topic)
         if self.on_update:
             self.on_update()
 
     def _handle_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None):
-        self.state.connected = False
-        logger.warning("disconnected: %s", reason_code)
+        if _is_failure(reason_code):
+            self.state.note_connection_error(f"disconnected: {reason_code}")
+            logger.warning("disconnected: %s", reason_code)
+        else:
+            # Clean disconnect - down, but nothing went wrong.
+            self.state.connected = False
+            logger.info("disconnected cleanly")
         if self.on_update:
             self.on_update()
 

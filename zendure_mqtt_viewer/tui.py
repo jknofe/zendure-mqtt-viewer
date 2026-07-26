@@ -8,23 +8,95 @@ Frame into addstr() calls and turning keypresses into tab changes.
 from __future__ import annotations
 
 import curses
+import logging
 import signal
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from . import layout
 from .state import DashboardState
 
-ATTR_MAP = {
+logger = logging.getLogger(__name__)
+
+# layout.Span.attr is a space-separated token set, e.g. "bold ok" or
+# "reverse accent bold". Emphasis tokens map straight to curses attributes;
+# colour names map to colour pairs allocated at startup. Unknown tokens are
+# ignored, so the layout can name a colour this file doesn't know without
+# breaking the display.
+EMPHASIS_MAP = {
     "normal": curses.A_NORMAL,
     "reverse": curses.A_REVERSE,
     "dim": curses.A_DIM,
     "bold": curses.A_BOLD,
+    # "muted" is deliberately an attribute rather than a colour: a dimmed
+    # foreground reads correctly on light and dark terminals alike, whereas
+    # any fixed grey is invisible on one of them.
+    "muted": curses.A_DIM,
 }
+
+COLOR_FG = {
+    "accent": curses.COLOR_CYAN,
+    "ok": curses.COLOR_GREEN,
+    "warn": curses.COLOR_YELLOW,
+    "error": curses.COLOR_RED,
+    "info": curses.COLOR_MAGENTA,
+}
+
+_color_pairs: dict[str, int] = {}
+_attr_cache: dict[str, int] = {}
+
+
+def init_colors() -> bool:
+    """Allocate one colour pair per named colour. True if colour is usable.
+
+    Monochrome terminals fall through to emphasis-only rendering - the
+    dashboard has to stay readable over a serial console or in TERM=dumb,
+    which is exactly where you end up when something has gone wrong.
+    """
+    _color_pairs.clear()
+    _attr_cache.clear()
+    try:
+        if not curses.has_colors():
+            return False
+        curses.start_color()
+    except curses.error:
+        return False
+
+    background = -1
+    try:
+        curses.use_default_colors()  # keep the user's own terminal background
+    except curses.error:
+        background = curses.COLOR_BLACK
+
+    for index, name in enumerate(sorted(COLOR_FG), start=1):
+        try:
+            curses.init_pair(index, COLOR_FG[name], background)
+        except curses.error:
+            continue  # ran out of pairs; the rest still render in emphasis
+        _color_pairs[name] = curses.color_pair(index)
+    return bool(_color_pairs)
+
+
+def attr_for(attr: str) -> int:
+    """Resolve a Span attr string to a curses attribute bitmask."""
+    cached = _attr_cache.get(attr)
+    if cached is not None:
+        return cached
+    value = curses.A_NORMAL
+    for token in attr.split():
+        if token in EMPHASIS_MAP:
+            value |= EMPHASIS_MAP[token]
+        elif token in _color_pairs:
+            value |= _color_pairs[token]
+    _attr_cache[attr] = value
+    return value
 
 # keys that switch tabs directly
 _DIGIT_KEYS = {ord(str(i + 1)): i for i in range(len(layout.TABS))}
 _QUIT_KEYS = {ord("q"), ord("Q")}
+
+# How often to checkpoint last-seen values while running.
+PERSIST_INTERVAL = 60.0
 
 # Belt-and-suspenders Ctrl-C handling: Python's default SIGINT handler turns
 # it into a KeyboardInterrupt raised between bytecode instructions, which
@@ -49,7 +121,7 @@ def _blit(stdscr, frame: layout.Frame) -> None:
         for span in line:
             if not span.text:
                 continue
-            attr = ATTR_MAP.get(span.attr, curses.A_NORMAL)
+            attr = attr_for(span.attr)
             try:
                 # Writing the very last cell of the very last line can raise
                 # curses.error on some terminals (auto-margin wrap) - never
@@ -71,15 +143,24 @@ def run(
     interval: float = 1.0,
     duration: Optional[float] = None,
     initial_tab: str = "overview",
+    on_persist: Optional[Callable[[], object]] = None,
 ) -> None:
     """Main curses loop. Call via curses.wrapper() so the terminal is always
     restored, including on exception or Ctrl-C.
+
+    ``on_persist`` (if given) is called every PERSIST_INTERVAL seconds to
+    checkpoint last-seen values, so a kill -9 or a laptop lid closing still
+    leaves a recent cache behind.
     """
     global _interrupted
     _interrupted = False
     prev_sigint = signal.signal(signal.SIGINT, _handle_sigint)
 
-    curses.curs_set(0)
+    init_colors()
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass  # terminals without a hideable cursor are still perfectly usable
     stdscr.nodelay(True)
     stdscr.timeout(150)  # ms - keeps key handling responsive between redraws
 
@@ -90,6 +171,7 @@ def run(
 
     end_time = time.time() + duration if duration is not None else None
     last_draw = 0.0
+    last_persist = time.time()
     need_redraw = True
 
     try:
@@ -98,6 +180,15 @@ def run(
                 return
 
             now = time.time()
+
+            if on_persist is not None and (now - last_persist) >= PERSIST_INTERVAL:
+                last_persist = now
+                try:
+                    on_persist()
+                except Exception as exc:  # pragma: no cover - a cache write
+                    # must never take down a running dashboard, and must
+                    # never say so on screen either. It goes in the log.
+                    logger.warning("last-seen checkpoint failed: %s", exc)
 
             ch = stdscr.getch()
             if ch != -1:

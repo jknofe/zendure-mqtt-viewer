@@ -18,16 +18,21 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import sys
 import time
 from pathlib import Path
 
 from . import config as config_mod
+from . import errorlog
 from . import layout
+from . import persist
 from . import replay as replay_mod
 from .mqtt_client import Subscriber
 from .state import DashboardState
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TAB = "overview"
 
@@ -48,6 +53,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--interval", type=float, default=1.0, help="screen refresh interval in seconds (default 1.0)")
     p.add_argument("--width", type=int, help="override detected terminal width (plain-text modes only)")
     p.add_argument("--height", type=int, help="override detected terminal height (plain-text modes only)")
+    p.add_argument("--cache", metavar="PATH", help="path to the last-seen value cache (default: ~/.cache/zendure-mqtt-viewer/last-seen.json)")
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="start from an empty dashboard and do not save last-seen values",
+    )
+    p.add_argument(
+        "--error-log",
+        metavar="PATH",
+        help="where to write the error log (default: ~/.cache/zendure-mqtt-viewer/error.log)",
+    )
+    p.add_argument(
+        "--no-error-log",
+        action="store_true",
+        help="do not write an error log (errors are still never shown on screen)",
+    )
     p.add_argument(
         "--tab",
         choices=[t.lower() for t in layout.TABS],
@@ -72,7 +93,13 @@ def _print_once(state: DashboardState, mode: str, args: argparse.Namespace, devi
     sys.stdout.flush()
 
 
-def _run_interactive(state: DashboardState, mode: str, args: argparse.Namespace, device_id: str = "") -> None:
+def _run_interactive(
+    state: DashboardState,
+    mode: str,
+    args: argparse.Namespace,
+    device_id: str = "",
+    on_persist=None,
+) -> None:
     # Imported lazily so --once/plain-text paths never need a real tty or
     # curses terminfo (handy for CI / piping / tests).
     import curses
@@ -87,6 +114,7 @@ def _run_interactive(state: DashboardState, mode: str, args: argparse.Namespace,
         interval=args.interval,
         duration=args.duration,
         initial_tab=args.tab,
+        on_persist=on_persist,
     )
 
 
@@ -96,7 +124,13 @@ def _run_headless_for_duration(state: DashboardState, args: argparse.Namespace) 
         time.sleep(min(0.2, max(0.0, deadline - time.time())))
 
 
-def _dispatch(state: DashboardState, mode: str, args: argparse.Namespace, device_id: str = "") -> None:
+def _dispatch(
+    state: DashboardState,
+    mode: str,
+    args: argparse.Namespace,
+    device_id: str = "",
+    on_persist=None,
+) -> None:
     tty = sys.stdout.isatty()
 
     if args.once:
@@ -108,7 +142,7 @@ def _dispatch(state: DashboardState, mode: str, args: argparse.Namespace, device
         return
 
     if tty:
-        _run_interactive(state, mode, args, device_id)
+        _run_interactive(state, mode, args, device_id, on_persist=on_persist)
         return
 
     # Piped / non-interactive: no curses. Wait out --duration (if any) then
@@ -121,6 +155,19 @@ def _dispatch(state: DashboardState, mode: str, args: argparse.Namespace, device
         if mode == "live":
             time.sleep(min(2.0, args.interval))
     _print_once(state, mode, args, device_id)
+
+
+def _note_error_log(state: DashboardState) -> None:
+    """One stderr line pointing at the log, printed after the dashboard is gone.
+
+    The dashboard itself never says a word about errors, so without this the
+    log would be a file nobody knows to look at. It is printed once, on the
+    way out, when the terminal already belongs to the shell again.
+    """
+    path = errorlog.active_path()
+    if path is None or (not state.parse_errors and not state.connection_error):
+        return
+    print(f"Errors occurred during this run, see {path}", file=sys.stderr)
 
 
 def _run_replay(args: argparse.Namespace) -> int:
@@ -141,22 +188,51 @@ def _run_live(args: argparse.Namespace) -> int:
     try:
         cfg = config_mod.load_broker_config(args.config)
     except config_mod.ConfigError as exc:
+        # Fatal and pre-curses: stderr is the right place for this one, and
+        # there is no dashboard yet for it to disturb.
+        logger.error("configuration error: %s", exc)
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
 
     state = DashboardState()
+
+    # Seed from the last run before connecting, so rare fields (packState,
+    # minSoc, socSet, ...) are on screen from the first frame instead of
+    # blank until the hub next happens to broadcast them.
+    cache_path = None if args.no_cache else persist.resolve_cache_path(args.cache)
+    on_persist = None
+    if cache_path is not None:
+        persist.load(state, cache_path)
+        on_persist = lambda: persist.save(state, cache_path)  # noqa: E731
+
     subscriber = Subscriber(cfg, state)
-    subscriber.start()
     try:
-        _dispatch(state, "live", args, device_id=cfg.device_id)
+        subscriber.start()
+    except OSError as exc:
+        # Connection refused / DNS failure / no route: report it rather than
+        # dying with a traceback over a half-drawn screen.
+        logger.error("cannot reach broker %s:%s: %s", cfg.host, cfg.port, exc)
+        print(f"Cannot reach broker {cfg.host}:{cfg.port}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        _dispatch(state, "live", args, device_id=cfg.device_id, on_persist=on_persist)
     finally:
         subscriber.stop()
+        # Also save on the way out, including after Ctrl-C, so a short run
+        # still leaves the next start something to work with.
+        if on_persist is not None:
+            on_persist()
+        _note_error_log(state)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    # Before anything else can log: this is what stops a log record from
+    # being printed over the dashboard by logging's stderr fallback.
+    errorlog.configure(None if args.no_error_log else errorlog.resolve_log_path(args.error_log))
     try:
         if args.replay:
             return _run_replay(args)

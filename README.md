@@ -44,6 +44,53 @@ A status bar is pinned to the bottom row on every tab: connection state,
 message count, parse error count, time since the last message, and key
 hints. Switch tabs with `1`-`4` or `Tab`/`Shift-Tab`, quit with `q`.
 
+Colour carries meaning rather than decoration: the SoC gauge runs red
+below 20% / yellow below 50% / green above, charging is green and
+discharging yellow, solar input is yellow and house output magenta, the
+connection state in the title bar is green when connected and red when
+not, and chrome (borders, labels, key hints) is dimmed so the numbers
+stand out. Terminals without colour fall back to bold/dim/reverse and
+stay fully readable.
+
+### Errors go to a log file, never to the screen
+
+The dashboard never prints error text. Nothing that goes wrong is allowed
+to draw a message, a reason string, or a stack trace into the frame:
+under curses, anything written to the terminal outside the layout lands on
+top of the dashboard and stays there.
+
+Everything is written to `~/.cache/zendure-mqtt-viewer/error.log` instead,
+timestamped and with more detail than a status bar could ever hold. The
+file is created only when there is something to record, and rotates at
+512 KB (two backups) so a hub that reconnects all night cannot fill the
+disk. `--error-log PATH` puts it elsewhere, `--no-error-log` turns it off,
+and `ZENDURE_MQTT_VIEWER_LOG` sets the path from the environment. If any
+error was recorded, a single line naming the log file is printed on exit,
+after the terminal has been handed back.
+
+What the dashboard does show is *state*, in cells it already owns: the
+title bar reads `CONNECTED` in green or `DISCONNECTED` in red, and the
+status bar carries the parse error count. So a refused connect (for
+example MQTT reason code `0x80`, "Unspecified error") looks like a
+`DISCONNECTED` title and an unchanged layout, with the broker's own words
+waiting in the log. The tool still never claims to be connected while it
+is subscribed to nothing.
+
+### Values survive a restart
+
+Because the stream is delta-only (see below), rare fields like
+`packState`, `minSoc`, `socSet` and the firmware versions can take a long
+time to be re-broadcast, so a fresh start used to show `--` for them for
+minutes. The last known values are cached to
+`~/.cache/zendure-mqtt-viewer/last-seen.json` while running and on exit,
+and reloaded at startup. Restored values keep their original timestamps,
+so they appear dimmed with their true age rather than posing as live
+readings, and the first live message for a field replaces it. Only raw
+values are cached, never formatted text, so decoding changes apply to
+restored values too. Use `--no-cache` to start empty, or `--cache PATH`
+to put the file elsewhere. A missing, corrupt, or stale (>24h) cache is
+ignored silently: it can never stop the dashboard from starting.
+
 ### Why values dim instead of disappear, and show `--` instead of `0`
 
 The hub's MQTT stream is **delta-only**: each message carries only the
@@ -130,7 +177,10 @@ Other flags: `--config PATH`, `--interval SECONDS` (screen refresh rate,
 default 1.0), `--tab {overview,hub,packs,raw}` (initial/only tab),
 `--width N` / `--height N` (override detected terminal size - only affects
 the plain-text `--once`/piped path; the interactive dashboard always reads
-the live terminal size and reacts to resize).
+the live terminal size and reacts to resize), `--cache PATH` and
+`--no-cache` (the last-seen value cache described above; live mode only,
+`--replay` never reads or writes it), `--error-log PATH` and
+`--no-error-log` (the error log described above).
 
 On a terminal too small to lay out (below roughly 54x14), the dashboard
 shows a compact "terminal too small" message instead of crashing or
@@ -155,10 +205,12 @@ one field must not clear previously-seen fields), never-seen-vs-zero,
 malformed-line handling (using the real captures in `samples/`, each of
 which contains one deliberately malformed line), unknown-field capture (top
 level, `properties`, and `packData`), config loading/env overrides, the
-publish guard, and the dashboard layout itself (frames never exceed the
-requested rows/cols at several sizes, exactly fill the screen when there's
-room, tab switching changes content, the active tab is marked, the small-
-terminal fallback doesn't crash).
+publish guard, error routing (records reach the log file, nothing reaches
+stdout or stderr, no error string is ever drawn into a frame, and an
+unwritable log location is survivable), and the dashboard layout itself
+(frames never exceed the requested rows/cols at several sizes, exactly
+fill the screen when there's room, tab switching changes content, the
+active tab is marked, the small-terminal fallback doesn't crash).
 
 ## Architecture
 
@@ -170,7 +222,15 @@ terminal fallback doesn't crash).
   what lets `--replay`/`--once` print the exact same thing curses draws.
 - `tui.py` - thin curses runtime: blits a `Frame` onto the real terminal
   and turns keypresses into tab changes. Everything layout-related lives in
-  `layout.py`; this file only calls `addstr()`.
+  `layout.py`; this file only calls `addstr()` and resolves span attributes
+  ("bold ok", "muted", ...) into curses attributes and colour pairs.
+- `persist.py` - the last-seen value cache: atomic save, tolerant load.
+- `errorlog.py` - the one place errors are allowed to go. Installs a
+  rotating file handler on the package logger with `propagate = False`, so
+  no log record can reach a root handler and be printed over the running
+  dashboard. A `NullHandler` in `__init__.py` covers the window before it
+  is configured, where `logging.lastResort` would otherwise write to
+  stderr.
 - `mqtt_client.py` - the publish-guarded subscriber.
 - `replay.py` - feeds a capture file through the same `DashboardState`
   the live subscriber uses.
