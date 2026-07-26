@@ -11,3 +11,9 @@ __pycache__/
 !pyproject.toml
 config.toml
 .config/
+.ai/
+
+# agent scaffolding - local only
+.claude/
+AGENTS.md
+CLAUDE.md
