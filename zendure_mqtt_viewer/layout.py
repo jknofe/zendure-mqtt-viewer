@@ -163,6 +163,91 @@ def gauge_spans(percent: Optional[float], width: int = 14) -> list[Span]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Power-flow arrows
+#
+# The watts are written *inside* the arrow rather than beside a label, so the
+# diagram reads as one thing: how much is moving, and which way.
+#
+#      Solar
+#        │
+#     491 W                     [ HUB ] ── 276 W ──▶ Home
+#        │
+#        ▼
+#
+# Both arrows shrink instead of overflowing: the vertical one drops its stem
+# segments on a short panel, the horizontal one drops shaft dashes on a
+# narrow one. The value itself is never what gets dropped.
+# ---------------------------------------------------------------------------
+
+
+def centre_on(text: str, column: int) -> str:
+    """Indent ``text`` so its middle sits on ``column``."""
+    return " " * max(0, column - len(text) // 2) + text
+
+
+def h_flow_spans(
+    value: str,
+    width: int,
+    *,
+    active: bool = True,
+    value_attr: str = "bold info",
+    shaft_attr: str = "muted",
+) -> list[Span]:
+    """A horizontal arrow with the value inside its shaft: ``── 276 W ──▶``.
+
+    ``width`` is the space available; the shaft is as long as fits, down to
+    no shaft at all, before anything truncates the value.
+    """
+    head = "▶" if active else "·"
+    for dashes in (2, 1):
+        left = "─" * dashes + " "
+        right = " " + "─" * dashes + head
+        if len(left) + len(value) + len(right) <= width:
+            return [
+                Span(left, shaft_attr),
+                Span(value, value_attr),
+                Span(right, shaft_attr),
+            ]
+    return [Span(value, value_attr), Span(" " + head, shaft_attr)]
+
+
+def v_flow_lines(
+    value: str,
+    column: int,
+    rows: int,
+    *,
+    up: bool = False,
+    active: bool = True,
+    attr: str = "muted",
+) -> list[list[Span]]:
+    """A vertical arrow with the value inside it, ``rows`` lines tall.
+
+    The head sits at the end the flow is going *to*: pointing down at what
+    is below, up at what is above. ``rows`` is 4, 2 or 1; anything else is
+    clamped, so a caller can hand over whatever vertical space it has.
+    """
+    stem = "│" if active else "·"
+    head = ("▲" if up else "▼") if active else "·"
+    value_attr = f"bold {attr}" if active else attr
+
+    if rows <= 1:
+        text = f"{head} {value}" if up else f"{value} {head}"
+        return [[Span(centre_on(text, column), value_attr)]]
+
+    value_line = [Span(centre_on(value, column), value_attr)]
+    stem_line = [Span(centre_on(stem, column), attr)]
+    head_line = [Span(centre_on(head, column), attr)]
+
+    if rows <= 3:
+        return [head_line, value_line] if up else [value_line, head_line]
+    return (
+        [head_line, stem_line, value_line, stem_line]
+        if up
+        else [stem_line, value_line, stem_line, head_line]
+    )
+
+
 def _value_and_age(rec: Optional[FieldRecord], now: float, strip_enum: bool = False) -> tuple[str, str, bool]:
     if rec is None:
         return "--", "--", False
@@ -349,19 +434,20 @@ def _overview_body(state: DashboardState, width: int, height: int, now: float):
         batt_label = "Charging"
         batt_icon = "▲"
         batt_power = charge_p.raw if charge_p else None
-        connector = "▼"
         batt_color = "ok"
     elif pack_state_raw == 2 or (pack_state_raw is None and discharge_p and discharge_p.raw):
         batt_label = "Discharging"
         batt_icon = "▼"
         batt_power = discharge_p.raw if discharge_p else None
-        connector = "▲"
         batt_color = "warn"
     else:
         batt_label = "Idle"
         batt_icon = "·"
-        batt_power = 0
-        connector = "·"
+        # A reported idle state means 0 W, and that is a fact worth printing.
+        # Nothing reported at all is not zero, and now that the value sits
+        # inside the arrow next to two "-- W" readings, a fake 0 there stands
+        # out as the lie it always was.
+        batt_power = 0 if (pack_state_raw is not None or charge_p or discharge_p) else None
         batt_color = "muted"
 
     floor_rec = hub.get("minSoc")
@@ -387,15 +473,40 @@ def _overview_body(state: DashboardState, width: int, height: int, now: float):
     batt_txt = f"{batt_power} W" if batt_power is not None else "-- W"
     solar_color = "warn" if (solar_rec is not None and solar_rec.raw) else "muted"
 
-    right_lines_raw: list[list[Span]] = [
-        [Span("POWER FLOW", "bold accent")],
-        [Span(" Solar  ", "bold"), Span(solar_txt, f"bold {solar_color}")],
-        [Span("    │", "muted")],
-        [Span("    ▼", solar_color)],
-        [Span(" [ HUB ] ", "bold accent"), Span("──▶", "muted"), Span(" Home  ", "bold"), Span(home_txt, "bold info")],
-        [Span(f"    {connector}", batt_color)],
-        [Span(" Battery ", "normal"), Span(batt_icon, batt_color), Span(f" {batt_txt}", batt_color)],
-    ]
+    # Column 4 is the "U" of "[ HUB ]" once the leading space is counted, so
+    # both vertical arrows hang off the middle of the hub box.
+    hub_box = " [ HUB ] "
+    stem_col = 4
+    solar_active = solar_rec is not None and bool(solar_rec.raw)
+    home_active = home_rec is not None and bool(home_rec.raw)
+
+    # Two arrows of n rows each, plus the three labels/box rows they connect.
+    flow_rows = 4 if height >= 11 else (2 if height >= 7 else 1)
+
+    hub_line: list[Span] = [Span(hub_box, "bold accent")]
+    hub_line += h_flow_spans(
+        home_txt,
+        max(0, right_w - 2 - len(hub_box) - len(" Home")),
+        active=home_active,
+        value_attr="bold info" if home_active else "muted",
+    )
+    hub_line.append(Span(" Home", "bold"))
+
+    right_lines_raw: list[list[Span]] = [[Span("POWER FLOW", "bold accent")]]
+    right_lines_raw.append([Span(centre_on("Solar", stem_col), "bold")])
+    right_lines_raw += v_flow_lines(
+        solar_txt, stem_col, flow_rows, active=solar_active, attr=solar_color
+    )
+    right_lines_raw.append(hub_line)
+    right_lines_raw += v_flow_lines(
+        batt_txt,
+        stem_col,
+        flow_rows,
+        up=batt_label == "Discharging",
+        active=batt_label != "Idle",
+        attr=batt_color,
+    )
+    right_lines_raw.append([Span(centre_on("Battery", stem_col), "normal")])
 
     def pad_to(lines: list[list[Span]], w: int, h: int) -> list[list[Span]]:
         out = [_row([Span("  ")] + line, w) for line in lines]

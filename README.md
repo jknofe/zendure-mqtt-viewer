@@ -26,8 +26,12 @@ A full-screen, in-place-redrawing dashboard (curses) with four tabs you
 switch between - it never scrolls, and only the active tab is drawn:
 
 - **`[1] Overview`** - the at-a-glance view: a SoC bar gauge, a small
-  Solar -> Hub -> Home power-flow diagram with a battery
-  charge/discharge arrow, floor/target SoC.
+  Solar / Hub / Home power-flow diagram with a battery charge/discharge
+  arrow, floor/target SoC. The watts are written inside the arrows
+  (`── 276 W ──▶`), so how much is moving and which way read as one
+  thing. The battery arrow points down into the pack when charging and up
+  into the hub when discharging. The arrows compact on a small terminal
+  (fewer shaft segments) rather than dropping the numbers.
 - **`[2] Hub`** - two columns of compact label/value rows: hub *state*
   (SoC, pack state, bypass, hub/wifi/heat state, time remaining, WiFi
   SSID/MAC/IP) and hub *settings* (output/input limits, min SoC floor,

@@ -5,6 +5,7 @@ way --replay / --once do, without ever touching curses or a terminal.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,136 @@ def test_direction_without_packstate_falls_back_to_the_right_field(props, expect
     assert expected in text
     if expected == "Charging":
         assert "Discharging" not in text
+
+
+# ---------------------------------------------------------------------------
+# Power-flow arrows carry the value
+#
+# The watts belong inside the arrow, not beside the label: one glance gives
+# both how much is moving and which way.
+# ---------------------------------------------------------------------------
+
+FLOW_PROPS = {
+    "packState": 1,
+    "outputPackPower": 204,
+    "solarInputPower": 491,
+    "outputHomePower": 276,
+}
+
+
+def _flow_lines(state: DashboardState, cols: int = 100, rows: int = 27) -> list[str]:
+    """Just the right-hand (power flow) half of each overview line.
+
+    The frame's right border is stripped so a line's own content is all that
+    is left; the arrow stems inside the content are untouched.
+    """
+    frame = layout.build_frame(state, "overview", cols, rows, now=1784980800.0, mode="replay")
+    return [line[cols // 2 :].rstrip().removesuffix("│").rstrip() for line in frame.to_text().splitlines()]
+
+
+def test_solar_watts_sit_between_the_stem_and_the_arrowhead():
+    lines = _flow_lines(_state_with(FLOW_PROPS))
+    i = next(n for n, line in enumerate(lines) if "491 W" in line)
+    assert "│" in lines[i - 1]
+    assert "│" in lines[i + 1]
+    assert "▼" in lines[i + 2]
+
+
+def test_home_watts_sit_inside_the_horizontal_shaft():
+    text = "\n".join(_flow_lines(_state_with(FLOW_PROPS)))
+    assert re.search(r"─+ 276 W ─+▶ Home", text)
+
+
+def test_the_labels_no_longer_repeat_the_value():
+    lines = _flow_lines(_state_with(FLOW_PROPS))
+    solar_line = next(line for line in lines if "Solar" in line)
+    battery_line = next(line for line in lines if "Battery" in line)
+    assert solar_line.strip() == "Solar"
+    assert battery_line.strip() == "Battery"
+
+
+def test_charging_points_the_battery_arrow_down_and_discharging_up():
+    charging = _flow_lines(_state_with({"packState": 1, "outputPackPower": 204}))
+    i = next(n for n, line in enumerate(charging) if "204 W" in line)
+    j = next(n for n, line in enumerate(charging) if "Battery" in line)
+    assert "▼" in charging[j - 1]  # head points at what it feeds
+    assert i < j
+
+    discharging = _flow_lines(_state_with({"packState": 2, "packInputPower": 542}))
+    k = next(n for n, line in enumerate(discharging) if "542 W" in line)
+    hub = next(n for n, line in enumerate(discharging) if "HUB" in line)
+    assert "▲" in discharging[hub + 1]
+    assert hub < k
+
+
+def test_the_value_survives_on_the_smallest_supported_terminal():
+    # The arrows compact rather than the numbers being dropped.
+    text = "\n".join(_flow_lines(_state_with(FLOW_PROPS), cols=54, rows=14))
+    assert "491 W" in text
+    assert "276 W" in text
+    assert "204 W" in text
+
+
+def test_a_never_seen_battery_reading_is_not_drawn_as_zero():
+    lines = _flow_lines(DashboardState())
+    assert any("-- W" in line for line in lines)
+    assert not any(re.search(r"\b0 W\b", line) for line in lines)
+
+
+def test_a_reported_idle_battery_is_drawn_as_zero():
+    lines = _flow_lines(_state_with({"packState": 0}))
+    assert any("0 W" in line for line in lines)
+
+
+# -- the arrow builders themselves ------------------------------------------
+
+
+def test_horizontal_arrow_keeps_the_value_and_gives_up_shaft_instead():
+    wide = "".join(sp.text for sp in layout.h_flow_spans("276 W", 40))
+    tight = "".join(sp.text for sp in layout.h_flow_spans("276 W", 10))
+    cramped = "".join(sp.text for sp in layout.h_flow_spans("276 W", 3))
+    assert wide == "── 276 W ──▶"
+    assert tight == "─ 276 W ─▶"
+    assert "276 W" in cramped
+    assert len(wide) >= len(tight) > len(cramped)
+
+
+@pytest.mark.parametrize("width", range(1, 40))
+def test_horizontal_arrow_never_exceeds_the_width_it_was_given(width):
+    spans = layout.h_flow_spans("276 W", width)
+    text = "".join(sp.text for sp in spans)
+    # The value is never truncated, so a width narrower than the value
+    # itself is allowed to overflow - the caller's _row() clips it. What
+    # must not happen is a shaft being drawn into space that isn't there.
+    assert len(text) <= max(width, len("276 W") + 2)
+
+
+@pytest.mark.parametrize("rows,expected", [(4, 4), (3, 2), (2, 2), (1, 1), (0, 1)])
+def test_vertical_arrow_uses_the_rows_it_is_given(rows, expected):
+    lines = layout.v_flow_lines("491 W", 4, rows)
+    assert len(lines) == expected
+    assert any("491 W" in sp.text for line in lines for sp in line)
+
+
+def test_vertical_arrow_head_marks_the_receiving_end():
+    down = ["".join(sp.text for sp in line) for line in layout.v_flow_lines("491 W", 4, 4)]
+    up = ["".join(sp.text for sp in line) for line in layout.v_flow_lines("542 W", 4, 4, up=True)]
+    assert "▼" in down[-1] and "▲" not in "".join(down)
+    assert "▲" in up[0] and "▼" not in "".join(up)
+
+
+def test_an_inactive_flow_is_drawn_without_arrowheads():
+    lines = ["".join(sp.text for sp in line) for line in layout.v_flow_lines("0 W", 4, 4, active=False)]
+    joined = "".join(lines)
+    assert "▼" not in joined and "│" not in joined
+    assert "0 W" in joined
+
+
+def test_centre_on_puts_the_middle_of_the_text_on_the_column():
+    assert layout.centre_on("491 W", 4) == "  491 W"
+    assert layout.centre_on("│", 4) == "    │"
+    assert layout.centre_on("Battery", 4) == " Battery"
+    assert layout.centre_on("way too long", 1) == "way too long"
 
 
 # ---------------------------------------------------------------------------
